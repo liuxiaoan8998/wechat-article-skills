@@ -122,6 +122,8 @@ class XingyanShixiConfig:
 
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
+LONG_IMAGE_SLICE_OVERLAP = 100
+SUPPORTED_ACCOUNTS = {"xingyan_shixi", "joblinker"}
 
 
 # 加载外部模板文件（如果存在）
@@ -217,6 +219,44 @@ def transform_title(original_title: str) -> str:
         new_title = new_title[:63] + "…"
 
     return new_title
+
+
+def normalize_account(account: str) -> str:
+    """Normalize uploader account keys to processor-supported values."""
+    account = (account or "xingyan_shixi").strip()
+    aliases = {
+        "xingyan_shixi": "xingyan_shixi",
+        "joblinker": "joblinker",
+        "研究生求职圈": "joblinker",
+    }
+    return aliases.get(account, account)
+
+
+def get_account_author(account: str) -> str:
+    """Resolve the author shown in draft metadata for each account."""
+    account = normalize_account(account)
+    authors = {
+        "xingyan_shixi": "行研实习",
+        "joblinker": "Joblinker",
+    }
+    return authors.get(account, account)
+
+
+def load_promotion_template(account: str) -> str:
+    """Load the account-specific promotion template with legacy fallback."""
+    account = normalize_account(account)
+    candidate_paths = [
+        SKILL_DIR / "templates" / f"{account}.html",
+        WEB_DIR / "wechat-mp-draft-processor-pro" / "templates" / f"{account}.html",
+    ]
+    for template_path in candidate_paths:
+        if template_path.exists():
+            with open(template_path, 'r', encoding='utf-8') as f:
+                return f.read()
+    raise FileNotFoundError(
+        f"找不到账号 {account} 的推广模板，已检查: "
+        + ", ".join(str(path) for path in candidate_paths)
+    )
 
 
 def extract_plain_text(html_or_md: str) -> str:
@@ -671,21 +711,29 @@ def process_long_images(article_dir: str, output_dir: str) -> List[str]:
         # 重新拼接切片
         if processed_slice_files:
             try:
-                # 读取所有切片并拼接
-                images_to_concat = [Image.open(f) for f in processed_slice_files]
+                # 读取所有切片并拼接。OCR 提取阶段会为长图切片保留 overlap，
+                # 重拼时需要去掉后续切片顶部的重叠区，否则会出现内容重复和错位。
+                prepared_slices = []
+                for idx, slice_path in enumerate(processed_slice_files):
+                    slice_img = Image.open(slice_path)
+                    if slice_img.mode in ('RGBA', 'P'):
+                        slice_img = slice_img.convert('RGB')
+
+                    if idx > 0 and slice_img.size[1] > LONG_IMAGE_SLICE_OVERLAP:
+                        slice_img = slice_img.crop(
+                            (0, LONG_IMAGE_SLICE_OVERLAP, slice_img.size[0], slice_img.size[1])
+                        )
+                    prepared_slices.append(slice_img)
 
                 # 计算总高度
-                total_height = sum(img.size[1] for img in images_to_concat)
-                max_width = max(img.size[0] for img in images_to_concat)
+                total_height = sum(img.size[1] for img in prepared_slices)
+                max_width = max(img.size[0] for img in prepared_slices)
 
                 # 创建新图
                 new_img = Image.new('RGB', (max_width, total_height), (255, 255, 255))
 
                 y_offset = 0
-                for img in images_to_concat:
-                    # 转换为 RGB（处理 PNG 透明通道）
-                    if img.mode in ('RGBA', 'P'):
-                        img = img.convert('RGB')
+                for img in prepared_slices:
                     new_img.paste(img, (0, y_offset))
                     y_offset += img.size[1]
 
@@ -734,9 +782,12 @@ def process_draft(
         Dict: 处理结果信息
     """
     article_dir = Path(article_dir).resolve()
+    account = normalize_account(account)
 
     if not article_dir.exists():
         raise FileNotFoundError(f"文章目录不存在: {article_dir}")
+    if account not in SUPPORTED_ACCOUNTS:
+        raise ValueError(f"不支持的账号: {account}，支持: {', '.join(sorted(SUPPORTED_ACCOUNTS))}")
 
     # 确定输出目录
     if output_dir is None:
@@ -747,7 +798,7 @@ def process_draft(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
-    print(f"📝 微信公众号草稿处理 - 行研实习")
+    print(f"📝 微信公众号草稿处理 - {get_account_author(account)}")
     print("=" * 60)
     print(f"📁 原始目录: {article_dir}")
     print(f"📁 输出目录: {output_dir}")
@@ -842,7 +893,7 @@ def process_draft(
         print("   ⚠️ 检测到原文已含推广内容，跳过追加")
         promotion = ""
     else:
-        promotion = config.PROMOTION_TEMPLATE.format(keyword=keyword)
+        promotion = load_promotion_template(account).format(keyword=keyword)
         print(f"   ✅ 已追加推广模板（关键词: {keyword}）")
 
     # 8. 组装最终 HTML
@@ -874,7 +925,7 @@ def process_draft(
         "title": new_title,
         "digest": digest,
         "keyword": keyword,
-        "author": config.AUTHOR,
+        "author": get_account_author(account),
         "content_source_url": original_url,
         "mode": mode,
         "original_title": original_title,
