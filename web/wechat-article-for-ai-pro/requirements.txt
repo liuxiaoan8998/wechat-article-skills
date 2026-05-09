@@ -1,0 +1,6 @@
+camoufox[geoip]
+markdownify
+beautifulsoup4
+httpx
+mcp
+Pillow>=10.0.0

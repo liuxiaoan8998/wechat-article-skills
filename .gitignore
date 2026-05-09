@@ -1,0 +1,68 @@
+# 忽略 Hermes 系统文件
+.bundled_manifest
+
+# 忽略所有非公众号运营相关的 Skill 分类
+/apple/
+/autonomous-ai-agents/
+/creative/
+/data-science/
+/devops/
+/diagramming/
+/dogfood/
+/domain/
+/email/
+/feeds/
+/gaming/
+/gifs/
+/github/
+/hermes-skills-git-sync/
+/inference-sh/
+/leisure/
+/mcp/
+/media/
+/mlops/
+/note-taking/
+/productivity/
+/red-teaming/
+/research/
+/smart-home/
+/social-media/
+/software-development/
+
+# 忽略 web/ 下非公众号运营相关的 Skill
+/web/lark-cli/
+/web/lark-cli-setup/
+
+# Python 运行时
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志
+*.log
+
+# 敏感配置（若未来使用 .env 方式）
+.env
+*.env
+secrets.json
+
+# 运行时状态文件
+reset_status_*.json
+update_records.json
+update_account.json
+promotion_media_ids.json
