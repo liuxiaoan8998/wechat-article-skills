@@ -326,11 +326,11 @@ def main() -> int:
 
     script_path = Path(__file__).resolve()
     scripts_dir = script_path.parent
-    repo_root = scripts_dir.parents[2]
+    repo_root = scripts_dir.parents[1]
     ctx = ScriptContext(
         repo_root=repo_root,
-        extract_main=repo_root / "web" / "wechat-article-for-ai-pro" / "main.py",
-        process_script=script_path,
+        extract_main=repo_root / "wechat-article-for-ai-pro" / "main.py",
+        process_script=scripts_dir / "process_draft.py",
         hermes_output=Path.home() / ".hermes" / "output",
         temp_output=Path("/tmp/wechat-draft-regression"),
     )

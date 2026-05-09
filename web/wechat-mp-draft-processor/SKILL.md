@@ -438,3 +438,43 @@ r"[\uff5c|]\s*..."
 |------|------|------|
 | v1.0 | 2026-04-27 | 初始版本，支持行研实习账号模板，包含文字模式/长图模式处理、标题转换、摘要生成、推广模板追加 |
 | v1.1 | 2026-04-27 | 完成长图模式真实文章测试、推广模板内嵌微信图片 URL、与上传脚本完成集成测试（draft.html 读取优先级 + draft/ 子目录图片路径适配） |
+| v1.2 | 2026-05-09 | 修复回归测试脚本路径错误，新增回归测试文档；发现投递方式移除、模板交叉污染、长图重叠检查公式等 11 项待修复问题 |
+
+---
+
+## 回归测试
+
+### 执行脚本
+
+```bash
+cd ~/.hermes/skills/web/wechat-mp-draft-processor/scripts
+python3 regression_test.py [--force-extract]
+```
+
+报告输出：`/tmp/wechat_draft_regression_report.json`
+
+### 测试覆盖
+
+| 用例 | 文章类型 | 期望模式 | 验证点 |
+|------|----------|----------|--------|
+| pure_image_with_qr | 纯图片+二维码 | long_image | 推广模板、重叠检查 |
+| gif_pure_image_delivery | GIF+长图混合 | long_image | 推广模板、重叠检查 |
+| mixed_image_delivery | 图文混合 | text | 模式检测、重叠检查 |
+| text_delivery_content | 纯文字 | text | 投递方式移除、推广模板交叉污染 |
+
+### 已修复的脚本问题（2026-05-09）
+
+`regression_test.py` 原版本存在 3 处路径错误，已修复：
+
+1. `process_script` 原指向脚本自身 → 修正为 `scripts_dir / "process_draft.py"`
+2. `extract_main` 路径多了 `web/` 层级 → 移除
+3. `repo_root` 计算 `parents[2]` 导致指向 `skills/` → 修正为 `parents[1]`
+
+### 已知待修复问题
+
+执行回归测试后发现的 11 项失败：
+
+1. **文字模式投递方式未完全移除**（2 项）：`text_delivery_content` 中 "投递方式"、"简历投递" 关键词仍残留于正文
+2. **推广模板交叉污染**（1 项）：Joblinker 账号模板混入了 "行研实习"（xingyan_shixi 的标记）
+3. **模式检测偏差**（2 项）：`mixed_image_delivery` 被检测为 `long_image`，但期望为 `text`
+4. **长图重叠检查公式不适用**（6 项）：硬编码 `expected = original - 100 * (slices - 1)` 与实际裁剪逻辑不匹配（未裁剪时高度不变，裁剪投递区时裁剪量远大于 100px）。需 redesign 检查逻辑，改为验证视觉无重复而非高度公式。
