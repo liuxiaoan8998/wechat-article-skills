@@ -234,7 +234,7 @@ with open('sync_data.json', 'w', encoding='utf-8') as f:
     json.dump(record_data, f, ensure_ascii=False)
 
 result = subprocess.run(
-    'lark-cli base +record-upsert --base-token E9y1bxjHGa9LeGs9q3Tc3J41nmf --table-id tblYIqHtHrWUlVnP --json @sync_data.json --as bot',
+    'lark-cli base +record-upsert --base-token "$FEISHU_BASE_TOKEN" --table-id "$FEISHU_ARTICLE_TABLE_ID" --json @sync_data.json --as bot',
     shell=True, capture_output=True, text=True
 )
 
@@ -282,8 +282,8 @@ cp -r /tmp/test_output/{article_id} ~/.hermes/output/  # article_id 从 metadata
 # 同步到飞书 Base（内容管理）
 export PATH="$HOME/.npm-global/lib/node_modules/@larksuite/cli/bin:$PATH"
 lark-cli base +record-upsert \
-  --base-token "E9y1bxjHGa9LeGs9q3Tc3J41nmf" \
-  --table-id "tblYIqHtHrWUlVnP" \
+  --base-token "$FEISHU_BASE_TOKEN" \
+  --table-id "$FEISHU_ARTICLE_TABLE_ID" \
   --json '{
     "文章标题": "文章标题",
     "公众号": "公众号名称",
@@ -1009,8 +1009,8 @@ def sync_article_to_feishu(article_dir: str) -> dict:
         ocr_content = f.read()
     
     # 3. 准备基础数据（从metadata提取）
-    base_token = "E9y1bxjHGa9LeGs9q3Tc3J41nmf"
-    table_id = "tblYIqHtHrWUlVnP"
+    base_token = os.getenv("FEISHU_BASE_TOKEN")
+    table_id = os.getenv("FEISHU_ARTICLE_TABLE_ID")
     
     # 格式化发布时间
     published_at = metadata.get('published_at', '')
@@ -1146,8 +1146,8 @@ def sync_to_feishu(record_data: dict) -> dict:
     Returns:
         dict: 包含 success, record_id, error 的结果
     """
-    base_token = "E9y1bxjHGa9LeGs9q3Tc3J41nmf"
-    table_id = "tblYIqHtHrWUlVnP"
+    base_token = os.getenv("FEISHU_BASE_TOKEN")
+    table_id = os.getenv("FEISHU_ARTICLE_TABLE_ID")
     
     # ⚠️ 关键：Lark CLI 要求使用相对路径，不能使用绝对路径
     # 先切换到临时目录，写入文件后再执行命令
@@ -1222,8 +1222,8 @@ def update_feishu_record(record_id: str, update_data: dict) -> dict:
     Returns:
         dict: 包含 success, record_id, error 的结果
     """
-    base_token = "E9y1bxjHGa9LeGs9q3Tc3J41nmf"
-    table_id = "tblYIqHtHrWUlVnP"
+    base_token = os.getenv("FEISHU_BASE_TOKEN")
+    table_id = os.getenv("FEISHU_ARTICLE_TABLE_ID")
     
     # 写入临时文件
     with open('update_data.json', 'w', encoding='utf-8') as f:
@@ -1413,9 +1413,9 @@ lark-cli base +record-upsert \
 | 属性 | 值 |
 |------|-----|
 | **Base 名称** | 公众号文章选题库 |
-| **Base 链接** | https://rqtvt0xmrql.feishu.cn/base/E9y1bxjHGa9LeGs9q3Tc3J41nmf |
-| **Base Token** | `E9y1bxjHGa9LeGs9q3Tc3J41nmf` |
-| **Table ID** | `tblYIqHtHrWUlVnP` |
+| **Base 链接** | https://rqtvt0xmrql.feishu.cn/base/$FEISHU_BASE_TOKEN |
+| **Base Token** | `"$FEISHU_BASE_TOKEN"` |
+| **Table ID** | `"$FEISHU_ARTICLE_TABLE_ID"` |
 
 ### 字段说明
 
@@ -1463,8 +1463,8 @@ lark-cli base +record-upsert \
 **完整示例**：
 ```bash
 lark-cli base +record-upsert \
-  --base-token "E9y1bxjHGa9LeGs9q3Tc3J41nmf" \
-  --table-id "tblYIqHtHrWUlVnP" \
+  --base-token "$FEISHU_BASE_TOKEN" \
+  --table-id "$FEISHU_ARTICLE_TABLE_ID" \
   --json '{
     "文章标题": "珀莱雅2026校招启动",
     "公众号": "珀莱雅招聘",
@@ -1502,8 +1502,8 @@ lark-cli base +record-upsert \
 #!/bin/bash
 # 将提取的文章同步到飞书 Base
 
-BASE_TOKEN="E9y1bxjHGa9LeGs9q3Tc3J41nmf"
-TABLE_ID="tblYIqHtHrWUlVnP"
+BASE_TOKEN="$FEISHU_BASE_TOKEN"
+TABLE_ID="$FEISHU_ARTICLE_TABLE_ID"
 ARTICLE_DIR="$1"
 
 # 读取 metadata
@@ -1710,7 +1710,7 @@ def verify_wechat_draft(appid: str, media_id: str, api_key: str) -> dict:
 result = verify_wechat_draft(
     appid="wxa0e3ae2f81exxxxx",
     media_id="svD8zPLBr026J0ip2Vt08Mk7wXHqMje5dGGQ_i3741PYE4_EVI5YJVbLSp_aY3rW",
-    api_key="sk-fe371224c96fd8ab819c8d9159099158ead65b5039ba5c4d"
+    api_key=os.getenv("JIANLIZHIZUO_API_KEY")
 )
 
 if result["success"]:
@@ -2088,8 +2088,8 @@ lark-cli api PUT /open-apis/bitable/v1/apps/.../records/RECORD_ID \
 export PATH="$HOME/.npm-global/lib/node_modules/@larksuite/cli/bin:$PATH"
 
 lark-cli base +record-upsert \
-  --base-token "E9y1bxjHGa9LeGs9q3Tc3J41nmf" \
-  --table-id "tblYIqHtHrWUlVnP" \
+  --base-token "$FEISHU_BASE_TOKEN" \
+  --table-id "$FEISHU_ARTICLE_TABLE_ID" \
   --json '{
     "文章标题": "实习 | 欧普照明27届实习生招聘正式开启！",
     "公众号": "欧普照明微招聘",
@@ -2121,12 +2121,12 @@ lark-cli base +record-upsert \
 
 ```bash
 # 更新采集时间
-lark-cli api PUT /open-apis/bitable/v1/apps/E9y1bxjHGa9LeGs9q3Tc3J41nmf/tables/tblYIqHtHrWUlVnP/records/RECORD_ID \
+lark-cli api PUT /open-apis/bitable/v1/apps/$FEISHU_BASE_TOKEN/tables/$FEISHU_ARTICLE_TABLE_ID/records/RECORD_ID \
   --data '{"fields": {"采集时间": 1776756180000}}' \
   --as bot
 
 # 更新投递方式
-lark-cli api PUT /open-apis/bitable/v1/apps/E9y1bxjHGa9LeGs9q3Tc3J41nmf/tables/tblYIqHtHrWUlVnP/records/RECORD_ID \
+lark-cli api PUT /open-apis/bitable/v1/apps/$FEISHU_BASE_TOKEN/tables/$FEISHU_ARTICLE_TABLE_ID/records/RECORD_ID \
   --data '{"fields": {"投递方式": "关注公众号在线投递"}}' \
   --as bot
 ```
@@ -2264,7 +2264,7 @@ lark-cli api PUT /open-apis/bitable/v1/apps/E9y1bxjHGa9LeGs9q3Tc3J41nmf/tables/t
 - **状态**: ✅ 写入成功
 - **记录 ID**: `recvhtBMKreN0I`
 - **字段填充**: 22/22 (100%)
-- **Base 链接**: https://rqtvt0xmrql.feishu.cn/base/E9y1bxjHGa9LeGs9q3Tc3J41nmf
+- **Base 链接**: https://rqtvt0xmrql.feishu.cn/base/$FEISHU_BASE_TOKEN
 
 ## 输出文件
 

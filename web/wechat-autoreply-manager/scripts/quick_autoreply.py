@@ -17,11 +17,31 @@ import subprocess
 import requests
 from datetime import datetime, timedelta
 
+# 自动加载 .env 文件（如果存在）
+_env_path = Path(__file__).resolve().parents[3] / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key, value.strip())
+
+# 自动加载 .env 文件（如果存在）
+_env_path = Path(__file__).resolve().parents[3] / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key, value.strip())
+
 # 配置
-API_KEY = "sk-fe371224c96fd8ab819c8d9159099158ead65b5039ba5c4d"
+API_KEY = os.getenv("JIANLIZHIZUO_API_KEY")
 BASE_URL = "https://mp.jianlizhizuo.cn/v1"
-BASE_TOKEN = "E9y1bxjHGa9LeGs9q3Tc3J41nmf"
-TABLE_ID = "tblYIqHtHrWUlVnP"
+BASE_TOKEN = os.getenv("FEISHU_BASE_TOKEN")
+TABLE_ID = os.getenv("FEISHU_ARTICLE_TABLE_ID")
 
 ACCOUNT_MAP = {
     "Joblinker": "wxYOUR_APPID_HERE",

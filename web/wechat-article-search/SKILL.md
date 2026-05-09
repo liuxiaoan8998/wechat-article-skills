@@ -63,7 +63,7 @@ filepath = DATA_DIR / filename
 ### 飞书Base表
 
 **表名**: 搜索文章池  
-**表ID**: `tblUTsHDtJ2JWEbW`
+**表ID**: `$FEISHU_SEARCH_POOL_TABLE_ID`
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -116,8 +116,8 @@ export DAJIALA_API_KEY="your_api_key_here"
 ### 飞书配置
 
 已内置在脚本中：
-- **Base Token**: `E9y1bxjHGa9LeGs9q3Tc3J41nmf`
-- **搜索文章池表ID**: `tblUTsHDtJ2JWEbW`
+- **Base Token**: `$FEISHU_BASE_TOKEN`
+- **搜索文章池表ID**: `$FEISHU_SEARCH_POOL_TABLE_ID`
 
 ## 搜索模式详解
 

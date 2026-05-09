@@ -801,8 +801,8 @@ requests.put(f'{BASE_URL}/accounts/{appid}/autoreplies/keywords/{rule_id}',
 
 ```bash
 lark-cli base +record-upsert \
-  --app E9y1bxjHGa9LeGs9q3Tc3J41nmf \
-  --table tblYIqHtHrWUlVnP \
+  --app "$FEISHU_BASE_TOKEN" \
+  --table "$FEISHU_ARTICLE_TABLE_ID" \
   --record xxx \
   --field '文章状态=已配置自动回复'
 ```

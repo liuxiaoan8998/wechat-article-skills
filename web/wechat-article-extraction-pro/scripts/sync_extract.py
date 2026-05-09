@@ -8,6 +8,16 @@ import subprocess
 import json
 import os
 import sys
+
+# 自动加载 .env 文件（如果存在）
+_env_path = Path(__file__).resolve().parents[3] / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key, value.strip())
 import re
 from datetime import datetime
 from pathlib import Path
@@ -19,8 +29,8 @@ if str(SHARED_DIR) not in sys.path:
 from wechat_pipeline import PipelineValidationError, validate_required_fields
 
 # 配置
-BASE_TOKEN = os.getenv("FEISHU_BASE_TOKEN", "E9y1bxjHGa9LeGs9q3Tc3J41nmf")
-TABLE_ID = os.getenv("FEISHU_ARTICLE_TABLE_ID", "tblYIqHtHrWUlVnP")
+BASE_TOKEN = os.getenv("FEISHU_BASE_TOKEN")
+TABLE_ID = os.getenv("FEISHU_ARTICLE_TABLE_ID")
 OUTPUT_BASE = os.getenv("WECHAT_EXTRACT_OUTPUT_BASE", "/tmp/test_output")
 TOOL_PATH = os.getenv("WECHAT_ARTICLE_TOOL_PATH", "/tmp/wechat-article-for-ai-pro")
 
@@ -39,6 +49,16 @@ def run_tool_extraction(url: str) -> dict:
     code = """
 import sys
 from wechat_to_md.cli import main
+
+# 自动加载 .env 文件（如果存在）
+_env_path = Path(__file__).resolve().parents[3] / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key, value.strip())
 sys.argv = ['wechat_to_md', sys.argv[1], '-o', sys.argv[2]]
 main()
 """

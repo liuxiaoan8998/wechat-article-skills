@@ -23,8 +23,8 @@ required_env_vars:
 
 | 参数名 | 类型 | 说明 | 示例 |
 |--------|------|------|------|
-| `feishu_base_token` | string | 飞书 Base Token | `E9y1bxjHGa9LeGs9q3Tc3J41nmf` |
-| `feishu_table_id` | string | 飞书表 ID | `tblYIqHtHrWUlVnP` |
+| `feishu_base_token` | string | 飞书 Base Token | `"$FEISHU_BASE_TOKEN"` |
+| `feishu_table_id` | string | 飞书表 ID | `"$FEISHU_ARTICLE_TABLE_ID"` |
 | `record_id` | string | 文章记录 ID | `recvhq1MWUhyc5` |
 
 ### 当 article_source = "local" 时
@@ -509,8 +509,8 @@ def upload_article_from_feishu(record_id: str):
 ```bash
 # 查询素材状态为"已选题"的记录
 lark-cli base +record-list \
-  --base-token "E9y1bxjHGa9LeGs9q3Tc3J41nmf" \
-  --table-id "tblYIqHtHrWUlVnP" \
+  --base-token "$FEISHU_BASE_TOKEN" \
+  --table-id "$FEISHU_ARTICLE_TABLE_ID" \
   --filter '{"material_status": "已选题"}' \
   --as bot
 ```

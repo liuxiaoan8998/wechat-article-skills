@@ -9,13 +9,33 @@ import json
 import subprocess
 from typing import Optional
 
+# 自动加载 .env 文件（如果存在）
+_env_path = Path(__file__).resolve().parents[3] / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key, value.strip())
+
+# 自动加载 .env 文件（如果存在）
+_env_path = Path(__file__).resolve().parents[3] / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key, value.strip())
+
 
 class FeishuBaseUpdater:
     """飞书Base更新器"""
     
     def __init__(self, base_token: str = None):
-        self.base_token = base_token or os.getenv('FEISHU_BASE_TOKEN', 'E9y1bxjHGa9LeGs9q3Tc3J41nmf')
-        self.table_id = 'tblYIqHtHrWUlVnP'  # 文章素材表
+        self.base_token = base_token or os.getenv('FEISHU_BASE_TOKEN')
+        self.table_id = os.getenv('FEISHU_ARTICLE_TABLE_ID')  # 文章素材表
     
     def update_record(self, record_id: str, fields: dict) -> dict:
         """

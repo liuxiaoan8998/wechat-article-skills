@@ -12,10 +12,30 @@ from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
 
+# 自动加载 .env 文件（如果存在）
+_env_path = Path(__file__).resolve().parents[3] / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key, value.strip())
+
+# 自动加载 .env 文件（如果存在）
+_env_path = Path(__file__).resolve().parents[3] / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key, value.strip())
+
 # ============ 配置 ============
 API_BASE = "https://www.dajiala.com"
-BASE_TOKEN = os.getenv("FEISHU_BASE_TOKEN", "E9y1bxjHGa9LeGs9q3Tc3J41nmf")
-SEARCH_POOL_TABLE_ID = os.getenv("FEISHU_SEARCH_POOL_TABLE_ID", "tblUTsHDtJ2JWEbW")
+BASE_TOKEN = os.getenv("FEISHU_BASE_TOKEN")
+SEARCH_POOL_TABLE_ID = os.getenv("FEISHU_SEARCH_POOL_TABLE_ID")
 LARK_CLI = os.getenv("LARK_CLI", shutil.which("lark-cli") or "lark-cli")
 
 # 数据存储目录

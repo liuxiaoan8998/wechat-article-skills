@@ -183,8 +183,8 @@ else:
 
 import subprocess, json
 
-base_token = "E9y1bxjHGa9LeGs9q3Tc3J41nmf"
-table_id = "tblYIqHtHrWUlVnP"
+base_token = os.getenv("FEISHU_BASE_TOKEN")
+table_id = os.getenv("FEISHU_ARTICLE_TABLE_ID")
 
 # 拉取全部记录进行查重
 cmd = f'lark-cli base +record-list --base-token {base_token} --table-id {table_id} --as bot'
@@ -289,7 +289,7 @@ with open('sync_data.json', 'w', encoding='utf-8') as f:
     json.dump(record_data, f, ensure_ascii=False)
 
 result = subprocess.run(
-    'lark-cli base +record-upsert --base-token E9y1bxjHGa9LeGs9q3Tc3J41nmf --table-id tblYIqHtHrWUlVnP --json @sync_data.json --as bot',
+    'lark-cli base +record-upsert --base-token "$FEISHU_BASE_TOKEN" --table-id "$FEISHU_ARTICLE_TABLE_ID" --json @sync_data.json --as bot',
     shell=True, capture_output=True, text=True
 )
 
@@ -337,8 +337,8 @@ cp -r /tmp/test_output/{article_id} ~/.hermes/output/  # article_id 从 metadata
 # 同步到飞书 Base（内容管理）
 export PATH="$HOME/.npm-global/lib/node_modules/@larksuite/cli/bin:$PATH"
 lark-cli base +record-upsert \
-  --base-token "E9y1bxjHGa9LeGs9q3Tc3J41nmf" \
-  --table-id "tblYIqHtHrWUlVnP" \
+  --base-token "$FEISHU_BASE_TOKEN" \
+  --table-id "$FEISHU_ARTICLE_TABLE_ID" \
   --json '{
     "文章标题": "文章标题",
     "公众号": "公众号名称",
@@ -863,8 +863,8 @@ if target_url in existing:
 **完整示例**：
 ```bash
 lark-cli base +record-upsert \
-  --base-token "E9y1bxjHGa9LeGs9q3Tc3J41nmf" \
-  --table-id "tblYIqHtHrWUlVnP" \
+  --base-token "$FEISHU_BASE_TOKEN" \
+  --table-id "$FEISHU_ARTICLE_TABLE_ID" \
   --json '{
     "文章标题": "珀莱雅2026校招启动",
     "公众号": "珀莱雅招聘",
@@ -911,8 +911,8 @@ def sync_article_to_feishu(article_dir: str) -> dict:
         ocr_content = f.read()
     
     # 3. 准备基础数据
-    base_token = "E9y1bxjHGa9LeGs9q3Tc3J41nmf"
-    table_id = "tblYIqHtHrWUlVnP"
+    base_token = os.getenv("FEISHU_BASE_TOKEN")
+    table_id = os.getenv("FEISHU_ARTICLE_TABLE_ID")
     
     # 格式化发布时间
     published_at = metadata.get('published_at', '')
@@ -1022,8 +1022,8 @@ def update_feishu_record(record_id: str, update_data: dict) -> dict:
     Returns:
         dict: 包含 success, record_id, error 的结果
     """
-    base_token = "E9y1bxjHGa9LeGs9q3Tc3J41nmf"
-    table_id = "tblYIqHtHrWUlVnP"
+    base_token = os.getenv("FEISHU_BASE_TOKEN")
+    table_id = os.getenv("FEISHU_ARTICLE_TABLE_ID")
     
     # 写入临时文件
     with open('update_data.json', 'w', encoding='utf-8') as f:
@@ -1120,8 +1120,8 @@ EOF
 
 # 执行同步
 lark-cli base +record-upsert \
-  --base-token "E9y1bxjHGa9LeGs9q3Tc3J41nmf" \
-  --table-id "tblYIqHtHrWUlVnP" \
+  --base-token "$FEISHU_BASE_TOKEN" \
+  --table-id "$FEISHU_ARTICLE_TABLE_ID" \
   --json @data.json \
   --as bot
 

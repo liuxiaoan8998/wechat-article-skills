@@ -21,6 +21,16 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, List
 
+
+# 自动加载 .env 文件（如果存在）
+_env_path = Path(__file__).resolve().parents[3] / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                os.environ.setdefault(key, value.strip())
 SHARED_DIR = Path(__file__).resolve().parents[2] / "_shared"
 if str(SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(SHARED_DIR))
@@ -36,9 +46,9 @@ from wechat_pipeline import (
 JIANLIZHIZUO_BASE_URL = "https://mp.jianlizhizuo.cn/v1"
 
 # 默认配置
-DEFAULT_BASE_TOKEN = "E9y1bxjHGa9LeGs9q3Tc3J41nmf"
-ARTICLE_TABLE_ID = "tblYIqHtHrWUlVnP"      # 文章素材表
-ACCOUNT_TABLE_ID = "tblWQzDq4KeYcrsm"      # 账号配置表
+DEFAULT_BASE_TOKEN = os.getenv("FEISHU_BASE_TOKEN")
+ARTICLE_TABLE_ID = os.getenv("FEISHU_ARTICLE_TABLE_ID")      # 文章素材表
+ACCOUNT_TABLE_ID = os.getenv("FEISHU_ACCOUNT_TABLE_ID")      # 账号配置表
 
 # 字段名映射（如果后续字段改名，只需修改这里）
 FIELD_STATUS = "文章状态"  # 文章状态字段，可选值：待选题、已选题、已上传草稿、待二创、待排版、待发布、已发布、已取消
