@@ -27,7 +27,11 @@ from typing import Dict, List, Optional, Tuple
 # 添加 skill 目录到路径
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
+WEB_DIR = SKILL_DIR.parent
 sys.path.insert(0, str(SKILL_DIR))
+sys.path.insert(0, str(WEB_DIR / "_shared"))
+
+from wechat_pipeline import ensure_img_srcs, extract_article_content
 
 
 # ============ 配置 ============
@@ -115,6 +119,9 @@ class XingyanShixiConfig:
     PROMOTION_TEMPLATE = _PROMOTION_TEMPLATE_FALLBACK
 
     AUTHOR="行研实习"
+
+
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
 
 
 # 加载外部模板文件（如果存在）
@@ -589,7 +596,7 @@ def process_long_images(article_dir: str, output_dir: str) -> List[str]:
 
         processed_images = []
         for img_file in sorted(images_dir.iterdir()):
-            if img_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif']:
+            if img_file.suffix.lower() in IMAGE_EXTENSIONS:
                 out_file = output_images_dir / img_file.name
                 import shutil
                 shutil.copy2(img_file, out_file)
@@ -782,24 +789,15 @@ def process_draft(
             with open(html_path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            # 提取 js_content 部分
-            match = re.search(r'id="js_content"[^>]*>(.*?)</div>\s*<script', content, re.DOTALL | re.IGNORECASE)
-            if match:
-                body_content = match.group(1)
-            else:
-                # 尝试提取 body
-                body_match = re.search(r'<body[^>]*>(.*?)</body>', content, re.DOTALL | re.IGNORECASE)
-                body_content = body_match.group(1) if body_match else content
-
-            # 清理 script 和 style
-            body_content = re.sub(r'<script[^>]*>.*?</script>', '', body_content, flags=re.DOTALL | re.IGNORECASE)
-            body_content = re.sub(r'<style[^>]*>.*?</style>', '', body_content, flags=re.DOTALL | re.IGNORECASE)
+            body_content, _source_label = extract_article_content(content)
+            body_content = ensure_img_srcs(body_content)
 
             # 移除头部标题
             body_content = re.sub(r'<h1[^>]*>.*?</h1>', '', body_content, flags=re.DOTALL | re.IGNORECASE, count=1)
 
             # 移除投递方式
             body_content = remove_delivery_sections_text(body_content)
+            body_content = ensure_img_srcs(body_content)
 
         else:
             # 使用 Markdown
@@ -817,7 +815,7 @@ def process_draft(
             output_images_dir.mkdir(parents=True, exist_ok=True)
             import shutil
             for img_file in images_dir.iterdir():
-                if img_file.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif']:
+                if img_file.suffix.lower() in IMAGE_EXTENSIONS:
                     shutil.copy2(img_file, output_images_dir / img_file.name)
 
     else:
@@ -860,6 +858,7 @@ def process_draft(
         full_html = f"""<div class="draft-content">
 {body_content}
 </div>"""
+    full_html = ensure_img_srcs(full_html)
 
     # 9. 保存文件
     print(f"\n💾 步骤 9: 保存文件")

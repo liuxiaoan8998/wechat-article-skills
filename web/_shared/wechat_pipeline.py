@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Tuple, List, Set
 
+from bs4 import BeautifulSoup
+
 
 class PipelineValidationError(Exception):
     """流水线验证错误，用于阻断后续步骤"""
@@ -26,22 +28,28 @@ def extract_article_content(html_content: str) -> Tuple[str, str]:
     Returns:
         (content, source_label) - 内容和来源标签
     """
-    # 尝试提取 js_content
-    match = re.search(r'id="js_content"[^>]*>(.*?)</div>', html_content, re.DOTALL)
-    if match:
-        return match.group(1).strip(), "js_content"
-    
-    # 尝试提取 body
-    match = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL | re.IGNORECASE)
-    if match:
-        return match.group(1).strip(), "body"
-    
-    # 回退：清理基本HTML结构后返回
-    content = re.sub(r'<!DOCTYPE[^>]*>', '', html_content, flags=re.IGNORECASE)
-    content = re.sub(r'<html[^>]*>', '', content, flags=re.IGNORECASE)
-    content = re.sub(r'</html>', '', content, flags=re.IGNORECASE)
-    content = re.sub(r'<head>.*?</head>', '', content, flags=re.IGNORECASE | re.DOTALL)
-    return content.strip(), "raw"
+    soup = BeautifulSoup(html_content, "html.parser")
+    js_content = soup.find(id="js_content")
+    if js_content:
+        return _clean_fragment("".join(str(child) for child in js_content.contents)), "js_content"
+
+    body = soup.find("body")
+    if body:
+        return _clean_fragment("".join(str(child) for child in body.contents)), "body"
+
+    return _clean_fragment(html_content), "raw"
+
+
+def _clean_fragment(content: str) -> str:
+    """清理 HTML 片段中的脚本、样式和文档外壳。"""
+    soup = BeautifulSoup(content, "html.parser")
+    for tag in soup(["script", "style", "head"]):
+        tag.decompose()
+    cleaned = str(soup)
+    cleaned = re.sub(r'<!DOCTYPE[^>]*>', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'</?html[^>]*>', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'</?body[^>]*>', '', cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
 
 
 def collect_img_refs(content: str) -> List[str]:
@@ -69,6 +77,22 @@ def collect_img_refs(content: str) -> List[str]:
             refs.add(ref)
     
     return sorted(list(refs))
+
+
+def ensure_img_srcs(content: str) -> str:
+    """
+    确保所有含 data-src 的图片都有真实 src。
+
+    微信原文常用 data-src 懒加载。草稿箱上传 API 通常只识别 src，
+    因此只保留 data-src 会导致上传后无图。
+    """
+    soup = BeautifulSoup(content, "html.parser")
+    for img in soup.find_all("img"):
+        data_src = img.get("data-src")
+        src = img.get("src")
+        if data_src and (not src or src.startswith("data:")):
+            img["src"] = data_src
+    return str(soup)
 
 
 def validate_draft_local_images(article_dir: Path, content: str) -> List[str]:

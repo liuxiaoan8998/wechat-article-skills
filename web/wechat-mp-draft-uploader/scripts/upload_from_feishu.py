@@ -38,6 +38,7 @@ if str(SHARED_DIR) not in sys.path:
 from wechat_pipeline import (
     PipelineValidationError,
     collect_img_refs,
+    ensure_img_srcs,
     extract_article_content,
     validate_draft_local_images,
 )
@@ -60,6 +61,25 @@ ACCOUNT_NAME_MAP = {
     "行研实习": "xingyan_shixi",
     "研究生求职圈": "joblinker",  # 无独立模板，套用 Joblinker
 }
+
+
+def resolve_draft_processor_script() -> Path:
+    """Prefer the current processor, with the legacy pro processor as fallback."""
+    repo_web = Path(__file__).resolve().parents[2]
+    current = repo_web / "wechat-mp-draft-processor" / "scripts" / "process_draft.py"
+    if current.exists():
+        return current
+    hermes_current = Path.home() / ".hermes/skills/web/wechat-mp-draft-processor/scripts/process_draft.py"
+    if hermes_current.exists():
+        return hermes_current
+    return Path.home() / ".hermes/skills/web/wechat-mp-draft-processor-pro/scripts/process.py"
+
+
+def build_processor_cmd(script: Path, article_dir: str, article_id: str, account: str) -> list[str]:
+    """Build command for current or legacy draft processor."""
+    if script.name == "process_draft.py":
+        return ["python3", str(script), "--article-dir", article_dir, "--account", account]
+    return ["python3", str(script), article_id, "--account", account]
 
 
 class FeishuClient:
@@ -747,12 +767,9 @@ def upload_from_feishu(
         first_account_name = adapt_accounts[0] if adapt_accounts else None
         first_account = ACCOUNT_NAME_MAP.get(first_account_name, first_account_name.lower().replace(' ', '_')) if first_account_name else None
         if first_account:
-            process_script = Path.home() / ".hermes/skills/web/wechat-mp-draft-processor-pro/scripts/process.py"
+            process_script = resolve_draft_processor_script()
             if process_script.exists():
-                cmd = [
-                    "python3", str(process_script), article_id,
-                    "--account", first_account
-                ]
+                cmd = build_processor_cmd(process_script, article_dir, article_id, first_account)
                 print(f"   执行: {' '.join(cmd)}")
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 
@@ -817,7 +834,7 @@ def upload_from_feishu(
     elif draft_html_path.exists():
         # 使用处理后的草稿 HTML - 包含推广模板和隐藏的投递方式
         with open(draft_html_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+            content = ensure_img_srcs(f.read())
         
         print(f"   使用: draft/draft.html (处理后的草稿，已添加推广模板)")
         using_draft_html = True
@@ -828,6 +845,7 @@ def upload_from_feishu(
             html_content = f.read()
         
         content, source_label = extract_article_content(html_content)
+        content = ensure_img_srcs(content)
         print(f"   使用: article_original.html (提取 {source_label}, {len(content)} 字符)")
         
     elif html_path.exists():
@@ -1056,6 +1074,7 @@ def upload_from_feishu(
                     f'data-src="{wx_url}"',
                     content
                 )
+            content = ensure_img_srcs(content)
             print(f"   ✓ 已替换 {len(image_url_map)} 个图片 URL")
     else:
         print(f"   无图片需要处理")
@@ -1133,9 +1152,9 @@ def upload_from_feishu(
                 draft_json_path.unlink()
             
             # 重新运行 process.py 生成当前账号的 draft
-            _process_script = Path.home() / ".hermes/skills/web/wechat-mp-draft-processor-pro/scripts/process.py"
+            _process_script = resolve_draft_processor_script()
             if _process_script.exists():
-                cmd = ["python3", str(_process_script), article_id, "--account", account_key]
+                cmd = build_processor_cmd(_process_script, article_dir, article_id, account_key)
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 if result.returncode == 0:
                     print(f"   \u2713 草稿处理器执行成功")
@@ -1145,7 +1164,7 @@ def upload_from_feishu(
             # 重新读取 content
             if draft_html_path.exists():
                 with open(draft_html_path, 'r', encoding='utf-8') as f:
-                    account_content = f.read()
+                    account_content = ensure_img_srcs(f.read())
                 
                 # 处理新 content 中的图片（补充上传新图片）
                 new_img_refs = set()
@@ -1240,6 +1259,7 @@ def upload_from_feishu(
                         f'data-src="{wx_url}"',
                         account_content
                     )
+                account_content = ensure_img_srcs(account_content)
             else:
                 print(f"   \u26a0\ufe0f draft.html 重新生成失败，使用原始 content")
                 account_content = content
