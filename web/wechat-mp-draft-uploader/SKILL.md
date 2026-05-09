@@ -284,16 +284,17 @@ python upload_from_feishu.py -aid 7907d7cb
 python upload_from_feishu.py --context
 python upload_from_feishu.py -ctx
 
-# 指定封面
+# 指定封面图片
 python upload_from_feishu.py -n 008 --cover img_001.jpg
 
 # 覆盖作者
 python upload_from_feishu.py -n 008 --author "Joblinker官方"
 
-# 启用图片压缩（当图片超过 1MB 时自动压缩）
+# 启用图片压缩
 python upload_from_feishu.py -n 008 --compress
-# 或简写
-python upload_from_feishu.py -n 008 -z
+
+# 使用原始HTML上传（跳过草稿处理器和推广模板）⭐ 新增
+python upload_from_feishu.py -n 008 --raw
 ```
 
 ### 完整参数
@@ -309,6 +310,7 @@ python upload_from_feishu.py -n 008 -z
 | `--author` / `-a` | string | ❌ | 覆盖作者 | `Joblinker` |
 | `--no-comment` | flag | ❌ | 关闭评论 | 默认开启 |
 | `--compress` / `-z` | flag | ❌ | 启用图片压缩 | 默认不压缩 |
+| `--raw` | flag | ❌ | 使用原始HTML上传 | 默认使用 draft.html |
 
 ## 数据流转
 

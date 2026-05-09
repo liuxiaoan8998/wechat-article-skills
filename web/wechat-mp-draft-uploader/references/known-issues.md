@@ -228,6 +228,166 @@ python upload_from_feishu.py --article-id 0d674f8c --target-account 行研实习
 
 *最后更新: 2026-05-09*
 
+---
+
+## `ModuleNotFoundError: wechat_pipeline`（共享模块缺失）
+
+### 现象
+- 运行 `upload_from_feishu.py` 时报错：`ModuleNotFoundError: No module named 'wechat_pipeline'`
+- traceback 指向 `from wechat_pipeline import PipelineValidationError, collect_img_refs, ...`
+- 脚本完全无法执行
+
+### 根因
+`upload_from_feishu.py` 依赖一个共享模块 `wechat_pipeline`，其位于 `~/.hermes/skills/web/_shared/wechat_pipeline.py`。该模块提供：
+- `PipelineValidationError` — 流水线验证异常基类
+- `extract_article_content(html)` — 从微信原始 HTML 提取正文
+- `collect_img_refs(content)` — 收集 HTML 中所有图片引用
+- `validate_draft_local_images(article_dir, content)` — 验证草稿引用的本地图片是否存在
+
+如果该文件被删除、移动或从未创建，上传脚本将直接崩溃。
+
+### 解决
+创建缺失的共享模块文件：
+
+```python
+# ~/.hermes/skills/web/_shared/wechat_pipeline.py
+import re
+import json
+from pathlib import Path
+from typing import Tuple, List
+
+class PipelineValidationError(Exception):
+    pass
+
+def extract_article_content(html_content: str) -> Tuple[str, str]:
+    match = re.search(r'id="js_content"[^>]*>(.*?)</div>', html_content, re.DOTALL)
+    if match:
+        return match.group(1).strip(), "js_content"
+    match = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip(), "body"
+    content = re.sub(r'<!DOCTYPE[^>]*>', '', html_content, flags=re.IGNORECASE)
+    content = re.sub(r'<html[^>]*>', '', content, flags=re.IGNORECASE)
+    content = re.sub(r'</html>', '', content, flags=re.IGNORECASE)
+    content = re.sub(r'<head>.*?</head>', '', content, flags=re.IGNORECASE | re.DOTALL)
+    return content.strip(), "raw"
+
+def collect_img_refs(content: str) -> List[str]:
+    """收集HTML中的图片引用，过滤掉 data: URI 内联图片"""
+    refs = set()
+    for match in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', content, re.IGNORECASE):
+        ref = match.group(1)
+        if not ref.startswith("data:"):
+            refs.add(ref)
+    for match in re.finditer(r'<img[^>]+data-src=["\']([^"\']+)["\']', content, re.IGNORECASE):
+        ref = match.group(1)
+        if not ref.startswith("data:"):
+            refs.add(ref)
+    return sorted(list(refs))
+
+def validate_draft_local_images(article_dir: Path, content: str) -> List[str]:
+    refs = collect_img_refs(content)
+    missing = []
+    draft_images_dir = article_dir / "draft" / "images"
+    original_images_dir = article_dir / "images"
+    for ref in refs:
+        if ref.startswith(("http://", "https://", "//", "data:")):
+            continue
+        ref_path = ref.lstrip("/")
+        found = False
+        if draft_images_dir.exists() and (draft_images_dir / ref_path).exists():
+            found = True
+        if original_images_dir.exists() and (original_images_dir / ref_path).exists():
+            found = True
+        if not found:
+            missing.append(ref)
+    return missing
+
+def write_manifest(article_dir: Path, data: dict) -> None:
+    manifest_path = article_dir / "manifest.json"
+    with open(manifest_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def validate_required_fields(fields: dict, required: list) -> None:
+    missing = [f for f in required if not fields.get(f)]
+    if missing:
+        raise PipelineValidationError(f"缺少字段: {', '.join(missing)}")
+```
+
+**注意**：`collect_img_refs` 必须过滤 `data:` URI，否则内联 SVG 会被误认为缺失的本地图片导致阻断上传。
+
+### 预防
+- 将该模块纳入 Skill Git 版本控制，确保新环境部署时自动创建
+- 上传脚本启动时做依赖预检：`Path("~/.hermes/skills/web/_shared/wechat_pipeline.py").exists()`
+
+---
+
+## data: URI 内联图片导致"部分草稿图片未成功上传并替换"阻断
+
+### 现象
+- 使用 `draft/draft.html` 上传时，步骤5报阻断错误：
+  `PipelineValidationError: 部分草稿图片未成功上传并替换，已阻断上传: data:image/svg+xml,%3C%3Fxml version=...`
+- 或：`草稿 HTML 引用了不存在的本地图片，已阻断上传: data:image/svg+xml,...`
+
+### 根因
+草稿 HTML 中可能包含 `data:image/svg+xml` 形式的**内联图片**（base64 编码的 SVG）。`collect_img_refs` 原实现未过滤 `data:` URI，将其当作需要上传的本地图片引用。验证阶段发现这些 "图片" 既不在远程也不存在于本地目录，于是触发阻断。
+
+### 解决
+在 `collect_img_refs` 中增加 `data:` 前缀过滤：
+
+```python
+def collect_img_refs(content: str) -> List[str]:
+    refs = set()
+    for match in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', content, re.IGNORECASE):
+        ref = match.group(1)
+        if not ref.startswith("data:"):  # 过滤内联图片
+            refs.add(ref)
+    # data-src 同理
+    return sorted(list(refs))
+```
+
+### 预防
+- `wechat_pipeline.py` 的 `collect_img_refs` 必须始终过滤 `data:` URI
+- 若未来支持 base64 内联图片上传，应单独处理而非混入本地/远程图片逻辑
+
+---
+
+## 飞书 Base 中同一 article_id 存在多条记录
+
+### 现象
+- 使用 `--article-id` 上传时报错：`找到多个文章ID为 xxx 的文章，请使用 record_id 直接指定`
+- 同一篇原始微信文章包含多个招聘岗位，在 Base 中被拆分为多条记录
+- 脚本拒绝执行，无法自动选择
+
+### 根因
+【文章ID】字段对应原始微信文章的 URL hash，多条记录（不同岗位）可能共享同一个 `article_id`。脚本通过 `article_id` 查询 Base 时发现多条匹配记录，为避免误操作而主动阻断。
+
+### 解决
+改用 `--record-id` 精确指定单条记录：
+
+```bash
+# 1. 查询该 article_id 对应的所有记录，获取目标 record_id
+lark-cli api GET "/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/records" \
+  --params '{"page_size":500}' \
+  --as bot 2>&1 | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for item in data.get('data', {}).get('items', []):
+    if item.get('fields', {}).get('文章ID') == '4ef45e86':
+        print(f\"record_id: {item.get('record_id')}, 适配账号: {item.get('fields', {}).get('适配账号')}, 状态: {item.get('fields', {}).get('文章状态')}\")
+"
+
+# 2. 使用 record_id 上传
+python upload_from_feishu.py --record-id recvj6UdXBFNTH
+```
+
+### 预防
+- 一篇文章含多个岗位时，**优先使用 `--record-id`** 而非 `--article-id`
+- 在飞书 Base 中通过【文章标题】区分不同岗位记录
+- 上传脚本可考虑增加 `--target-account` 参数，在重复记录中按适配账号自动选择
+
+---
+
 ## 新账号无独立推广模板的处理（Template Fallback）
 
 ### 现象

@@ -637,7 +637,8 @@ def upload_from_feishu(
     cover_image: str = None,
     author: str = None,
     need_open_comment: int = 1,
-    compress: bool = False
+    compress: bool = False,
+    use_raw_html: bool = False
 ) -> Dict:
     """
     从飞书 Base 上传文章到微信公众号草稿箱（支持多账号）
@@ -658,6 +659,7 @@ def upload_from_feishu(
         author: 指定作者（可选，默认从 Base 读取）
         need_open_comment: 是否开启评论（默认1开启）
         compress: 是否启用图片压缩（默认False不压缩）
+        use_raw_html: 是否使用原始HTML上传（默认False，使用处理后的draft.html）
     
     Returns:
         Dict: 包含 results（每个账号的上传结果列表）
@@ -735,7 +737,10 @@ def upload_from_feishu(
     # ===== 自动草稿处理器前置检查 =====
     # 如果 draft/draft.html 不存在，自动调用草稿处理器生成
     draft_html_path = Path(article_dir) / "draft" / "draft.html"
-    if not draft_html_path.exists():
+    
+    if use_raw_html:
+        print(f"\n🔄 使用原始HTML模式，跳过草稿处理器...")
+    elif not draft_html_path.exists():
         print(f"\n🔄 草稿文件不存在，自动调用草稿处理器...")
         
         # 获取第一个适配账号作为处理目标
@@ -771,7 +776,7 @@ def upload_from_feishu(
     else:
         print(f"   ✓ draft/draft.html 已存在")
 
-    if not draft_html_path.exists():
+    if not use_raw_html and not draft_html_path.exists():
         raise PipelineValidationError(
             f"草稿处理未生成 draft/draft.html，已阻断上传: {draft_html_path}"
         )
@@ -788,7 +793,28 @@ def upload_from_feishu(
     md_path = Path(article_dir) / "article.md"
     ocr_path = Path(article_dir) / "article-ocr.md"
     
-    if draft_html_path.exists():
+    if use_raw_html:
+        # 使用原始HTML模式，跳过 draft.html
+        if original_html_path.exists():
+            with open(original_html_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            content, source_label = extract_article_content(html_content)
+            print(f"   使用: article_original.html (原始HTML模式, 提取 {source_label}, {len(content)} 字符)")
+        elif html_path.exists():
+            with open(html_path, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            body_match = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL | re.IGNORECASE)
+            if body_match:
+                content = body_match.group(1).strip()
+            else:
+                content = re.sub(r'<!DOCTYPE[^>]*>', '', html_content, flags=re.IGNORECASE)
+                content = re.sub(r'<html[^>]*>|</html>', '', content, flags=re.IGNORECASE)
+                content = re.sub(r'<head>.*?</head>', '', content, flags=re.DOTALL | re.IGNORECASE)
+                content = content.strip()
+            print(f"   使用: article.html (原始HTML模式, 提取正文)")
+        else:
+            raise FileNotFoundError(f"原始HTML模式下找不到 article_original.html 或 article.html")
+    elif draft_html_path.exists():
         # 使用处理后的草稿 HTML - 包含推广模板和隐藏的投递方式
         with open(draft_html_path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -1537,6 +1563,8 @@ def main():
                        help='关闭评论（默认开启）')
     parser.add_argument('--compress', '-z', action='store_true',
                        help='启用图片压缩（默认不压缩）')
+    parser.add_argument('--raw', action='store_true',
+                       help='使用原始HTML上传，跳过草稿处理器和推广模板')
     
     args = parser.parse_args()
     
@@ -1557,7 +1585,8 @@ def main():
             cover_image=args.cover,
             author=args.author,
             need_open_comment=0 if args.no_comment else 1,
-            compress=args.compress
+            compress=args.compress,
+            use_raw_html=args.raw
         )
         
         print(f"\n" + "=" * 60)
