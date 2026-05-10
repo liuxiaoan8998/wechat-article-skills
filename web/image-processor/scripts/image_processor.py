@@ -37,6 +37,14 @@ DELIVERY_HINT_RE = re.compile(
     r'(投递|申请|扫码|二维码|邮箱|邮件|网申|官网|咨询|联系|简历|报名)',
     re.IGNORECASE,
 )
+DELIVERY_FOOTER_RE = re.compile(
+    r'(校园招聘官网|招聘官网|官网投递|官网申请|投递邮箱|简历投递邮箱|联系方式|联系邮箱|邮箱投递|网申链接|申请链接|投递方式)',
+    re.IGNORECASE,
+)
+QR_CTA_RE = re.compile(
+    r'(即刻|立即|马上|扫码申请|扫码投递|在线申请|立即申请|投递二维码|申请二维码)',
+    re.IGNORECASE,
+)
 MIN_KEEP_HEIGHT = 80
 DEFAULT_DISPLAY_GAP = 0
 
@@ -651,6 +659,35 @@ def _compute_keep_ranges(removal_ranges: List[Tuple[int, int]], image_height: in
     return keep_ranges
 
 
+def _is_footer_delivery_block(block: Dict[str, Any], image_width: int, image_height: int) -> bool:
+    """Detect bottom-of-image delivery/contact sections that should be removed to the end."""
+    text = block["text"]
+    top_ratio = block["top"] / image_height if image_height else 0
+    bottom_ratio = block["bottom"] / image_height if image_height else 0
+    width_ratio = block["width"] / image_width if image_width else 0
+
+    footer_signal = (
+        block["contact_match"]
+        or block["delivery_match"]
+        or bool(DELIVERY_FOOTER_RE.search(text))
+    )
+    return footer_signal and bottom_ratio >= 0.58 and (top_ratio >= 0.42 or width_ratio >= 0.22)
+
+
+def _has_qr_cta_nearby(block: Dict[str, Any], qr_boxes: List[Dict[str, Any]], image_height: int) -> bool:
+    """Detect short CTA text that usually accompanies a QR-code apply card."""
+    if not QR_CTA_RE.search(block["text"]):
+        return False
+
+    block_mid = (block["top"] + block["bottom"]) / 2
+    vertical_slack = max(120, int(image_height * 0.08))
+    for box in qr_boxes:
+        qr_mid = (box["top"] + box["bottom"]) / 2
+        if abs(block_mid - qr_mid) <= vertical_slack:
+            return True
+    return False
+
+
 def _write_image_segment(
     img: Image.Image,
     output_dir: Path,
@@ -833,21 +870,41 @@ def process_article_images(
             removal_ranges: List[Tuple[int, int]] = []
             keywords_found = list({block["text"] for block in matched_blocks if block["delivery_match"] or block["contact_match"]})
 
+            qr_area_ratio = 0.0
+            if qr_boxes:
+                qr_boxes = [box for box in qr_boxes if (box["right"] - box["left"]) >= min_qr_size and (box["bottom"] - box["top"]) >= min_qr_size]
+                if qr_boxes:
+                    qr_area_ratio = sum((box["right"] - box["left"]) * (box["bottom"] - box["top"]) for box in qr_boxes) / total_area
+
+            footer_blocks = [
+                block for block in matched_blocks
+                if _is_footer_delivery_block(block, w, h)
+            ]
+            footer_cut_top = None
+            if footer_blocks:
+                footer_cut_top = max(
+                    0,
+                    min(block["top"] for block in footer_blocks) - buffer_px,
+                )
+                removal_ranges.append((footer_cut_top, h))
+
             if matched_blocks:
                 for block in matched_blocks:
+                    if footer_cut_top is not None and block["bottom"] >= footer_cut_top:
+                        continue
                     top = max(0, block["top"] - buffer_px)
                     bottom = min(h, block["bottom"] + buffer_px)
                     removal_ranges.append((top, bottom))
 
-            qr_area_ratio = 0.0
-            if qr_boxes:
-                qr_boxes = [box for box in qr_boxes if (box["right"] - box["left"]) >= min_qr_size and (box["bottom"] - box["top"]) >= min_qr_size]
-                for box in qr_boxes:
-                    top = max(0, box["top"] - qr_padding)
-                    bottom = min(h, box["bottom"] + qr_padding)
-                    removal_ranges.append((top, bottom))
-                if qr_boxes:
-                    qr_area_ratio = sum((box["right"] - box["left"]) * (box["bottom"] - box["top"]) for box in qr_boxes) / total_area
+            qr_cta_blocks = [
+                block for block in text_blocks
+                if _has_qr_cta_nearby(block, qr_boxes, h)
+            ] if qr_boxes else []
+
+            for box in qr_boxes:
+                top = max(0, box["top"] - qr_padding)
+                bottom = min(h, box["bottom"] + qr_padding)
+                removal_ranges.append((top, bottom))
 
             if not removal_ranges:
                 # C类: 无关键词/二维码，原样保留
@@ -874,23 +931,46 @@ def process_article_images(
             print(f"   二维码块: {len(qr_boxes)}")
             print(f"   移除高度占比: {removal_ratio*100:.1f}%")
 
-            if removal_ratio >= delivery_ratio:
+            strong_qr_boxes = [
+                box for box in qr_boxes
+                if ((box["right"] - box["left"]) / w >= 0.18 and (box["bottom"] - box["top"]) / h >= 0.12)
+            ]
+            non_signal_blocks = [
+                block for block in text_blocks
+                if not (block["delivery_match"] or block["contact_match"] or block["hint_match"])
+            ]
+            non_signal_area_ratio = sum(block["area"] for block in non_signal_blocks) / total_area if total_area else 0
+            qr_dominant_remove = bool(
+                strong_qr_boxes and (
+                    qr_cta_blocks
+                    or (qr_area_ratio >= 0.035 and len(non_signal_blocks) <= 3 and non_signal_area_ratio <= 0.12)
+                    or (qr_area_ratio >= 0.05 and len(matched_blocks) <= 4)
+                )
+            )
+
+            if qr_dominant_remove or removal_ratio >= delivery_ratio:
                 # A类: 纯投递图，整图移除
                 delivery_path = delivery_dir / img_name
                 _save_image(img, str(delivery_path))
                 result["class_a_removed"].append(img_name)
+                remove_reason = "qr_dominant_delivery_image" if qr_dominant_remove and removal_ratio < delivery_ratio else f"delivery_content_{removal_ratio*100:.0f}%"
                 result["image_map"][img_name] = {
                     "action": "removed",
-                    "reason": f"delivery_content_{removal_ratio*100:.0f}%",
+                    "reason": remove_reason,
                     "original_path": str(img_path.relative_to(article_dir)),
                     "keywords_found": keywords_found,
                     "removal_ratio": round(removal_ratio, 3),
                     "qr_area_ratio": round(qr_area_ratio, 3),
+                    "footer_cut_top": footer_cut_top,
+                    "qr_cta_blocks": [block["text"] for block in qr_cta_blocks],
                     "removal_ranges": merged_ranges,
                     "delivery_path": str(delivery_path.relative_to(article_dir)),
                     "display_parts": [],
                 }
-                print(f"   → 整图移除到 delivery/ (纯投递图)")
+                if qr_dominant_remove and removal_ratio < delivery_ratio:
+                    print(f"   → 整图移除到 delivery/ (二维码主导投递图)")
+                else:
+                    print(f"   → 整图移除到 delivery/ (纯投递图)")
 
             else:
                 keep_ranges = _compute_keep_ranges(merged_ranges, h)
@@ -904,6 +984,7 @@ def process_article_images(
                         "original_path": str(img_path.relative_to(article_dir)),
                         "keywords_found": keywords_found,
                         "removal_ratio": round(removal_ratio, 3),
+                        "footer_cut_top": footer_cut_top,
                         "removal_ranges": merged_ranges,
                         "delivery_path": str(delivery_path.relative_to(article_dir)),
                         "display_parts": [],
@@ -941,6 +1022,8 @@ def process_article_images(
                     "keywords_found": keywords_found,
                     "removal_ratio": round(removal_ratio, 3),
                     "qr_area_ratio": round(qr_area_ratio, 3),
+                    "footer_cut_top": footer_cut_top,
+                    "qr_cta_blocks": [block["text"] for block in qr_cta_blocks],
                     "removal_ranges": merged_ranges,
                     "keep_ranges": keep_ranges,
                     "segments": segment_records,
