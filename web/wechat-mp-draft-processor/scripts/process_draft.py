@@ -70,6 +70,9 @@ class XingyanShixiConfig:
     OCR_DELIVERY_KEYWORDS = [
         "投递方式", "简历投递", "联系方式", "申请方式",
         "如何申请", "简历发送", "联系我们", "招聘流程",
+        "扫码申请", "即刻扫码", "二维码", "网申链接",
+        "校园招聘官网", "招聘官网", "投递邮箱", "邮箱投递",
+        "网申", "邮件投递", "发送简历", "报名链接",
     ]
 
     # 固定模板（HTML 格式）
@@ -596,16 +599,40 @@ def crop_slice_remove_delivery(article_dir: str, slice_file: str, output_file: s
         except Exception as e:
             print(f"    ⚠️ OCR 定位失败: {e}")
 
-        # 启发式规则：裁剪掉底部 40%
+        # 启发式规则：裁剪掉底部 45%
         # 因为投递方式通常在长图下半部分
-        crop_y = int(height * 0.6)
+        crop_y = int(height * 0.55)
         cropped = img.crop((0, 0, width, crop_y))
         cropped.save(output_path, quality=95)
-        print(f"    ✅ 已裁剪投递区域（启发式: 保留60%）: {slice_file} -> {output_file}")
+        print(f"    ✂️ 已裁剪投递区域（启发式: 保留55%）: {slice_file} -> {output_file}")
         return True
 
     except Exception as e:
         print(f"    ❌ 裁剪失败: {e}")
+        return False
+
+
+def crop_image_bottom(
+    input_path: Path,
+    output_path: Path,
+    keep_ratio: float = 0.55
+) -> bool:
+    """
+    对普通图片做底部裁剪，去除投递方式区域
+
+    策略：保留图片顶部 keep_ratio 比例的内容，丢弃底部
+    """
+    from PIL import Image
+    try:
+        img = Image.open(input_path)
+        width, height = img.size
+        crop_y = int(height * keep_ratio)
+        cropped = img.crop((0, 0, width, crop_y))
+        cropped.save(output_path, quality=95)
+        print(f"    ✂️ 已裁剪底部 {(1 - keep_ratio) * 100:.0f}%: {input_path.name}")
+        return True
+    except Exception as e:
+        print(f"    ❌ 普通图片裁剪失败: {e}")
         return False
 
 
@@ -624,6 +651,8 @@ def process_long_images(article_dir: str, output_dir: str) -> List[str]:
     from PIL import Image
 
     print("  🖼️ 长图模式：处理图片...")
+
+    config = XingyanShixiConfig()
 
     # 1. 解析 OCR 切片
     slices_info = parse_ocr_slices(article_dir)
@@ -664,8 +693,43 @@ def process_long_images(article_dir: str, output_dir: str) -> List[str]:
 
         # 检查该图片是否有切片需要裁剪
         slices_to_crop = [(s, f) for s, f in delivery_slices if s == img_name]
+        ocr_text = img_info.get("ocr_text", "")
+        has_delivery_in_ocr = any(kw in ocr_text for kw in config.OCR_DELIVERY_KEYWORDS)
 
-        if not slices_to_crop or not img_info.get("is_long_image"):
+        # ========== 普通图片检测与裁剪 ==========
+        if not img_info.get("is_long_image"):
+            if has_delivery_in_ocr or slices_to_crop:
+                ocr_text_lower = ocr_text.lower()
+                # 如果是纯投递方式图（含二维码/扫码+申请等组合），直接丢弃
+                is_pure_delivery = (
+                    "二维码" in ocr_text and ("扫码" in ocr_text or "即刻" in ocr_text)
+                )
+                if is_pure_delivery:
+                    print(f"  🚮 普通图片为纯投递方式图，已丢弃: {img_name}")
+                    continue
+
+                # 否则做底部裁剪
+                out_path = output_images_dir / img_name
+                if crop_image_bottom(img_path, out_path, keep_ratio=0.55):
+                    processed_images.append(str(out_path))
+                    print(f"  ✂️ 裁剪普通图片投递区域: {img_name}")
+                else:
+                    # 裁剪失败，回退到复制
+                    import shutil
+                    shutil.copy2(img_path, out_path)
+                    processed_images.append(str(out_path))
+                    print(f"  ⚠️ 裁剪失败，复制图片: {img_name}")
+            else:
+                # 无需裁剪，直接复制
+                out_path = output_images_dir / img_name
+                import shutil
+                shutil.copy2(img_path, out_path)
+                processed_images.append(str(out_path))
+                print(f"  ✅ 复制图片: {img_name}")
+            continue
+
+        # ========== 长图切片处理 ==========
+        if not slices_to_crop:
             # 无需裁剪，直接复制
             out_path = output_images_dir / img_name
             import shutil
@@ -689,14 +753,36 @@ def process_long_images(article_dir: str, output_dir: str) -> List[str]:
             print(f"  ⚠️ 无切片信息，直接复制: {img_name}")
             continue
 
-        # 处理每个切片
-        processed_slice_files = []
-        for slice_info in all_slices:
+        # 确定含投递关键词的切片索引
+        delivery_indices = set()
+        for idx, slice_info in enumerate(all_slices):
             slice_file = slice_info["slice_file"]
-            is_delivery = any(f == slice_file for _, f in delivery_slices)
+            if any(f == slice_file for _, f in delivery_slices):
+                delivery_indices.add(idx)
+
+        # 尾部切片丢弃策略：
+        # 如果含关键词的切片在最后 2 个位置，直接丢弃从它开始的所有尾部切片
+        # 这样更彻底地去除底部投递区域
+        max_delivery_idx = max(delivery_indices) if delivery_indices else -1
+        tail_drop_threshold = len(all_slices) - 2  # 倒数2个切片开始
+
+        if max_delivery_idx >= tail_drop_threshold:
+            # 丢弃从第一个含投递关键词的切片开始的所有尾部切片
+            first_delivery_idx = min(delivery_indices)
+            kept_slices = all_slices[:first_delivery_idx]
+            print(f"    📝 尾部切片含投递信息，丢弃切片 {first_delivery_idx + 1}~{len(all_slices)}")
+        else:
+            # 含关键词切片不在尾部，对每个含关键词切片单独裁剪
+            kept_slices = all_slices
+
+        # 处理保留的切片
+        processed_slice_files = []
+        for idx, slice_info in enumerate(kept_slices):
+            slice_file = slice_info["slice_file"]
+            is_delivery = idx in delivery_indices
 
             if is_delivery:
-                # 裁剪该切片
+                # 裁剪该切片（含关键词但不在尾部的情况）
                 processed_name = f"processed_{Path(slice_file).name}"
                 crop_slice_remove_delivery(article_dir, slice_file, processed_name)
                 processed_slice_path = Path(article_dir) / processed_name
