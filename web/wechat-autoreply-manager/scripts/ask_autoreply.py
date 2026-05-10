@@ -22,14 +22,29 @@ from autoreply_api import WechatAutoreplyAPI
 from feishu_base_updater import FeishuBaseUpdater
 
 
-def find_article_directory(article_title: str, base_dir: str = None) -> str:
+def find_article_directory(article_title: str, article_id: str = None, base_dir: str = None) -> str:
     """
     查找文章本地目录
     
+    优先通过 article_id（8位UUID）精确定位，回退到标题模糊匹配（兼容旧版本）
+    
     搜索路径：
-    1. ~/.hermes/output/文章标题/
-    2. /tmp/test_output/文章标题/
+    1. ~/.hermes/output/{article_id}/  (推荐)
+    2. ~/.hermes/output/文章标题/    (兼容旧版)
+    3. /tmp/test_output/文章标题/   (兼容旧版)
     """
+    # 优先通过 article_id 精确查找
+    if article_id:
+        for base in [base_dir, os.path.expanduser('~/.hermes/output'), '/tmp/test_output']:
+            if not base:
+                continue
+            candidate = os.path.join(base, article_id)
+            if os.path.exists(candidate) and os.path.isdir(candidate):
+                # 验证目录有效性（检查 metadata.json）
+                if os.path.exists(os.path.join(candidate, 'metadata.json')):
+                    return candidate
+    
+    # 回退到标题匹配
     if base_dir:
         candidate = os.path.join(base_dir, article_title)
         if os.path.exists(candidate):

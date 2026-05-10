@@ -200,7 +200,7 @@ def get_content_html(article_dir: str) -> str:
 
 ```bash
 # 检查 article_original.html 大小
-ls -lh ~/.hermes/output/文章标题/
+ls -lh ~/.hermes/output/{article_id}/
 
 # 正常（已生成精简版）
 # article_upload.html      17K   ← 应该存在且小于 100KB

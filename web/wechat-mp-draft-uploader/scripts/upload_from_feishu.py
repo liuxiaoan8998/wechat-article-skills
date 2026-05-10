@@ -111,6 +111,41 @@ class FeishuClient:
         else:
             raise Exception(f"获取记录失败: {data.get('error', '未知错误')}")
     
+    def find_record_by_article_id(self, article_id: str, status_filter: str = None) -> Optional[str]:
+        """
+        根据文章ID查找对应的飞书记录ID（支持状态过滤）
+        
+        场景: 同步脚本返回的 record_id 可能因重复写入而失效，
+              此时可用文章ID重新定位当前有效记录。
+        
+        Args:
+            article_id: 文章ID（如 7c3989b2）
+            status_filter: 可选，只返回指定状态的记录（如"待选题"）
+        
+        Returns:
+            record_id 或 None
+        """
+        if not article_id:
+            return None
+        items = self.query_records(ARTICLE_TABLE_ID, limit=500)
+        candidates = []
+        for item in items:
+            if item.get('文章ID') == article_id:
+                candidates.append(item)
+        
+        if not candidates:
+            return None
+        
+        # 如果指定了状态过滤，优先匹配
+        if status_filter:
+            for c in candidates:
+                if c.get(FIELD_STATUS) == status_filter:
+                    return c.get('record_id')
+        
+        # 默认返回最新的一条（假设 record_id 字典序越大的越新）
+        candidates.sort(key=lambda x: x.get('record_id', ''), reverse=True)
+        return candidates[0].get('record_id')
+    
     def query_records(self, table_id: str, filter_str: str = None, limit: int = 500) -> List[Dict]:
         """查询记录列表"""
         args = f'base +record-list --base-token {self.base_token} --table-id {table_id}'

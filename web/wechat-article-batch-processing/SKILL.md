@@ -118,6 +118,10 @@ def batch_extract_and_sync(
                 continue
             
             # ========== 获取文章输出目录 ==========
+            # ⚠️ 致命陷阱：禁止用 st_mtime 排序来定位目录！
+            # 原因：1) 工具直接输出到 ~/.hermes/output/，历史目录会干扰；
+            #      2) 提取/复制操作会修改目录 mtime，导致后续 URL 始终匹配到同一目录。
+            # 正确做法：读取所有目录的 metadata.json，按 url 字段精确匹配。
             tmp_dirs = [d for d in Path(output_base).iterdir() if d.is_dir() and d.name != "debug"]
             
             if not tmp_dirs:
@@ -125,8 +129,21 @@ def batch_extract_and_sync(
                 results.append(result)
                 continue
             
-            # 选择最新创建的目录
-            article_dir = max(tmp_dirs, key=lambda p: p.stat().st_mtime)
+            # 读取所有候选目录的 metadata，按 url 匹配当前文章
+            article_dir = None
+            for d in sorted(tmp_dirs, key=lambda p: p.stat().st_mtime, reverse=True):
+                meta_path = d / "metadata.json"
+                if meta_path.exists():
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    if meta.get("url") == url:
+                        article_dir = d
+                        break
+            
+            # 兜底：如果 url 匹配失败，再回退到最新目录（并告警）
+            if article_dir is None:
+                article_dir = max(tmp_dirs, key=lambda p: p.stat().st_mtime)
+                print(f"⚠️ 警告：未通过 url 匹配到目录，回退使用最新目录: {article_dir.name}")
             
             # 读取 metadata.json 获取 article_id
             metadata_path = article_dir / "metadata.json"
@@ -259,7 +276,21 @@ cat /tmp/test_output/debug/debug_*.html | grep -o '<title>[^<]*</title>' | tail 
 
 提取完成后必须复制到 `~/.hermes/output/{article_id}/`，确保上传脚本可以找到。
 
-### 4. 失败分类
+### 4. 批量处理时的目录识别陷阱
+
+**问题：**当用 `max(tmp_dirs, key=lambda p: p.stat().st_mtime)` 来定位最新输出目录时，如果工具直接输出到 `~/.hermes/output/`（或同一临时目录），当处理第 N 个 URL 时：
+- 历史目录会干扰排序结果
+- 提取过程中的文件写入会更新目录 mtime
+- 导致所有 URL 都被误判为同一目录
+
+**后果：**后面的文章覆盖前面的文章，所有记录都指向同一个输出。
+
+**解决：**
+1. 首选：读取每个目录的 `metadata.json`，按 `url` 字段精确匹配
+2. 备选：每次提取前清空输出目录，确保只有一个目录存在
+3. 避免：绝对不要在循环中使用 `st_mtime` 作为唯一定位依据
+
+### 5. 失败分类
 
 | 分类 | 处理 | 是否需要用户干预 |
 |------|------|----------------|
@@ -275,3 +306,4 @@ cat /tmp/test_output/debug/debug_*.html | grep -o '<title>[^<]*</title>' | tail 
 | 版本 | 变更 |
 |------|------|
 | v1.0 | 初始版本：批量处理流程 + 链接失效检测 + debug HTML 诊断 |
+| v1.1 | 修复批量处理时的目录识别陷阱：禁止使用 st_mtime 排序定位输出目录，改用 metadata.json 按 url 精确匹配，避免后续文章覆盖前面文章 |

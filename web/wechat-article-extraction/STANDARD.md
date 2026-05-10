@@ -414,7 +414,7 @@ python main.py "URL" -o ./output --force
 - **标准文档**: `STANDARD.md`（本文档）
 - **快速参考**: `SKILL.md`
 - **对比分析**: `~/.hermes/output/方案对比分析报告.md`
-- **示例输出**: `~/.hermes/output/瑞幸咖啡2026春季校招_方案2_wechat_article_for_ai/`
+- **示例输出**: `~/.hermes/output/{article_id}/` (article_id 为8位UUID)
 
 ---
 

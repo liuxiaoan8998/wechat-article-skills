@@ -4,7 +4,7 @@
 基于简立制作 API 平台
 
 Usage:
-    python upload_draft.py --article-dir "~/.hermes/output/文章标题/" --cover "cover.jpg"
+    python upload_draft.py --article-dir "~/.hermes/output/{article_id}/" --cover "cover.jpg"
     python upload_draft.py --title "标题" --content "content.html" --cover "cover.jpg"
 """
 
@@ -172,7 +172,7 @@ class WechatDraftUploader:
         从文章目录上传单篇文章到草稿箱
         
         Args:
-            article_dir: 文章输出目录路径（如 ~/.hermes/output/文章标题/）
+            article_dir: 文章输出目录路径（如 ~/.hermes/output/{article_id}/，article_id 为8位UUID）
             cover_image: 封面图片文件名（默认使用 images/ 目录下的第一张图片）
             author: 作者名称
             digest: 文章摘要

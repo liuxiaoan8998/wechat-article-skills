@@ -150,7 +150,7 @@ def get_image_full_path(article_dir: str, image_file: str) -> str:
     获取图片完整路径
     
     Args:
-        article_dir: 文章目录（如 ~/.hermes/output/文章标题/）
+        article_dir: 文章目录（如 ~/.hermes/output/{article_id}/，article_id 为8位UUID）
         image_file: 图片文件名（如 img_003.png）
         
     Returns:

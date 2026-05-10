@@ -64,7 +64,7 @@ python main.py "https://mp.weixin.qq.com/s/ARTICLE_ID" -o ./output
 工具提取完成后，通知 Hermes：
 
 ```
-"请总结这篇文章：./output/文章标题"
+"请总结这篇文章：./output/{article_id}"
 ```
 
 Hermes 会：

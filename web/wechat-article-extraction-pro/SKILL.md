@@ -31,10 +31,10 @@ description: >
 │  3. 下载所有图片到 images/ 目录                             │
 │  4. OCR 识别（RapidOCR）                                    │
 │  5. 二维码识别（zbar-py）                                    │
-│  6. 生成 8 位 UUID 作为文章ID（如 fa70b413）               │
-  │  7. 输出 7 文件/目录到 /tmp/test_output/{article_id}/            │
-│  8. ⚠️ 自动复制到 ~/.hermes/output/{article_id}/            │
-│     （确保上传脚本可正确查找本地目录）
+  │  6. 生成 8 位 UUID 作为文章ID（如 fa70b413）               │
+  │  7. 输出 7 文件/目录到 /tmp/test_output/{文章标题}/         │
+  │  8. ⚠️ 自动复制到 ~/.hermes/output/{article_id}/            │
+  │     （供上传脚本直接读取，无需手动复制）
 │                                                             │
 │  阶段 2：AI 分析（自动执行）                                │
 │  ─────────────────────────────                              │
@@ -90,6 +90,7 @@ description: >
 | **API返回URL格式不兼容** | **修复 `validate_url()` 支持两种格式**：<br>• `/s/xxx` 标准路径格式<br>• `/s?__biz=xxx` 查询参数格式（极致了API返回） |
 | **发布时间字段遗漏** | **修复同步流程**：`record_data` 必须包含 `published_at` 字段，不能遗漏 |
 | **空字段标记** | **统一规范**：信息未获取的字段必须填充 `"/"`，不能留空 |
+| **路径标准化** | **统一使用 `~/.hermes/output/{article_id}/`**（8位UUID）：<br>• 工具自动输出到 article_id 目录<br>• 所有下游 Skill（上传/自动回复/OCR）必须引用 article_id 路径<br>• 兼容旧版：保留标题目录回退逻辑（`ask_autoreply.py` 中 `find_article_directory()` 优先 article_id，回退标题匹配）<br>• 历史重复标题目录已归档到 `~/.hermes/output/.deprecated_title_dirs/` |
 
 ### URL格式兼容性修复（v3.0.1）
 
@@ -126,7 +127,8 @@ def validate_url(url: str) -> bool:
 
 import subprocess
 import os
-import shutil
+import re
+from pathlib import Path
 
 url = "用户提供的URL"
 output_base = "/tmp/test_output"
@@ -140,31 +142,34 @@ result = subprocess.run(
 if result.returncode != 0:
     raise Exception(f"工具提取失败: {result.stderr}")
 
-# 获取输出目录（从 stdout 解析或使用已知路径）
-# 假设输出目录为：/tmp/test_output/文章标题
-
-# ⚠️ 关键：自动复制到 ~/.hermes/output/（供上传脚本使用）
+# 从 stdout 解析 article_id（如 "Saved: ... (ID: 7c3989b2, ..."解析）
+# 或者从 /tmp/test_output/ 下唯一新建目录读取 metadata.json
 import glob
-from pathlib import Path
+import json
 
-tmp_dirs = glob.glob(f"{output_base}/*")
-if tmp_dirs:
-    article_dir = tmp_dirs[0]
-    article_id = os.path.basename(article_dir)
-    
-    # 目标目录
-    hermes_output = Path.home() / ".hermes" / "output" / article_id
-    
-    # 如果已存在，先删除
-    if hermes_output.exists():
-        shutil.rmtree(hermes_output)
-    
-    # 复制目录
-    shutil.copytree(article_dir, hermes_output)
-    print(f"✅ 已复制到: {hermes_output}")
-else:
+tmp_dirs = [d for d in glob.glob(f"{output_base}/*") if os.path.isdir(d)]
+if not tmp_dirs:
     raise Exception("未找到工具提取的输出目录")
 
+# 按时间排序，取最新的
+article_dir = max(tmp_dirs, key=os.path.getmtime)
+metadata_path = os.path.join(article_dir, "metadata.json")
+with open(metadata_path, "r", encoding="utf-8") as f:
+    metadata = json.load(f)
+
+article_id = metadata.get("article_id")
+if not article_id:
+    raise Exception("未能从 metadata.json 读取 article_id")
+
+# 工具已自动复制到 ~/.hermes/output/{article_id}/
+# 直接使用此路径
+hermes_dir = Path.home() / ".hermes" / "output" / article_id
+if not hermes_dir.exists():
+    raise Exception(f"工具未正确复制到 Hermes 输出目录: {hermes_dir}")
+
+print(f"✅ 工具提取完成，article_id: {article_id}")
+print(f"✅ 目录位置: {hermes_dir}")
+```
 # ============================================================
 # 阶段 2：Hermes 总结（AI 自动处理）
 # ============================================================
@@ -277,7 +282,8 @@ patch: path/to/article-ocr.md
   new_string: "## 三、完整文字内容...\n\n### 公司概况\n..."
 
 # 同步到 ~/.hermes/output/
-cp -r /tmp/test_output/{article_id} ~/.hermes/output/  # article_id 从 metadata.json 中读取
+# ⚠️ 工具已自动复制到 ~/.hermes/output/{article_id}/，无需手动复制
+# hermes_dir = Path.home() / ".hermes" / "output" / article_id
 
 # 同步到飞书 Base（内容管理）
 export PATH="$HOME/.npm-global/lib/node_modules/@larksuite/cli/bin:$PATH"
@@ -307,13 +313,13 @@ lark-cli base +record-upsert \
 
 ```
 ~/.hermes/output/{article_id}/  # article_id = metadata.json 中的 8位UUID
-├── article_original.html   # 原始微信HTML（Camoufox 抓取的完整HTML，含base64图片，~3-4MB，保留原文章样式）
-├── article.html            # HTML 查看器（formatter.py 生成的图片查看器，~4KB，仅含标题+图片+小程序码，无文字内容）
-├── article.md              # 基础 Markdown
-├── article-ocr.md          # OCR 结果 + 二维码 + 总结 ✅
-├── metadata.json           # 元数据（含 article_id、url、title 等）
-├── images/                 # 原始图片
-└── slices/                 # 长图切片（如有）
+┌─── article_original.html   # 原始微信HTML（Camoufox 抓取的完整HTML，含base64图片，~3-4MB，保留原文章样式）
+├─── article.html            # HTML 查看器（formatter.py 生成的图片查看器，~4KB，仅含标题+图片+小程序码，无文字内容）
+├─── article.md              # 基础 Markdown
+├─── article-ocr.md          # OCR 结果 + 二维码 + 总结 ✅
+├─── metadata.json           # 元数据（含 article_id、url、title 等）
+├─── images/                 # 下载的图片
+└─── slices/                 # 长图切片（如有）
 ```
 
 **文件说明**：
@@ -321,6 +327,7 @@ lark-cli base +record-upsert \
 - `article.html`: formatter.py 生成的图片查看器，仅包含标题、图片、二维码/小程序码，**不含文章正文文字**，不能用于公众号上传。
 - `article.md`: 含有文章正文文字，是上传脚本应使用的内容来源。
 - `article-ocr.md`: OCR识别结果+二维码+总结，用于AI分析和Base填充。
+- **上传脚本应从 `~/.hermes/output/{article_id}/` 读取，而非从 /tmp/test_output/ 读取**。
 
 ### article-ocr.md 结构（v1.7+）
 
@@ -589,7 +596,7 @@ python main.py "https://mp.weixin.qq.com/s/..." -o ./output -v
 
 ```python
 # 1. 获取图片列表
-images = list(Path("output/文章标题/images").glob("img_*"))
+images = list(Path(f"~/.hermes/output/{article_id}/images").glob("img_*"))
 
 # 2. 调用 vision_analyze 识别每张图片
 for img in images:
@@ -993,7 +1000,7 @@ def sync_article_to_feishu(article_dir: str) -> dict:
     完整的文章同步流程，包含字段检查和自动补充
     
     Args:
-        article_dir: 文章输出目录路径（如 ~/.hermes/output/文章标题/）
+        article_dir: 文章输出目录路径（如 ~/.hermes/output/{article_id}/，article_id 为8位UUID）
         
     Returns:
         dict: 包含 success, record_id, missing_fields 的结果
@@ -1103,7 +1110,7 @@ def sync_article_to_feishu(article_dir: str) -> dict:
             os.remove('sync_data.json')
 
 # 使用示例
-result = sync_article_to_feishu("~/.hermes/output/Peet's第二届暑期实习项目火热招聘中！/")
+result = sync_article_to_feishu("~/.hermes/output/{article_id}/")
 if result['success']:
     print(f"记录ID: {result['record_id']}")
     if result['missing_fields']:
@@ -1572,44 +1579,61 @@ vision_analyze(image_url="...", question="提取文字")
 # 效率低，重复工作
 ```
 
-### 2. 文章目录查找逻辑（v3.0.2 新增）
+### 2. 文章目录查找逻辑（v3.0.12 更新）
 
-**问题**：文章标题包含特殊字符（如 `|`）时，提取的目录名可能被截断。
+**核心原则**：上传脚本应直接使用 `article_id`（8位UUID）定位 `~/.hermes/output/{article_id}/`，而非通过文章标题搜索。
 
-**示例**：
-- 原标题：`实习 | 字节跳动2027届实习生招聘`
-- 工具提取目录：`/tmp/test_output/实习`（被截断）
-- 实际完整目录：`/tmp/test_output/实习 _ 字节跳动2027届实习生招聘`
+**原因**：
+- 工具在 `-o` 目录下用**文章标题**建目录（如 `/tmp/test_output/路易威登2026零售练习生招募开启/`）
+- 工具自动复制到 `~/.hermes/output/{article_id}/`（如 `~/.hermes/output/7c3989b2/`）
+- 文章标题可能含特殊字符，用标题搜索易出错
 
-**解决方案**：
+**正确做法**：
 ```python
-# 方法1：使用metadata.json中的标题查找
-def find_article_dir_by_title(output_dir, target_title):
-    """通过标题查找文章目录"""
-    for dirname in os.listdir(output_dir):
-        full_path = os.path.join(output_dir, dirname)
-        if os.path.isdir(full_path):
-            metadata_path = os.path.join(full_path, 'metadata.json')
-            if os.path.exists(metadata_path):
-                with open(metadata_path, 'r', encoding='utf-8') as f:
-                    metadata = json.load(f)
-                if metadata.get('title') == target_title:
-                    return full_path
-    return None
+from pathlib import Path
 
-# 方法2：使用URL查找（推荐）
-def find_article_dir_by_url(output_dir, target_url):
-    """通过URL查找文章目录"""
-    for dirname in os.listdir(output_dir):
-        full_path = os.path.join(output_dir, dirname)
-        if os.path.isdir(full_path):
-            metadata_path = os.path.join(full_path, 'metadata.json')
-            if os.path.exists(metadata_path):
-                with open(metadata_path, 'r', encoding='utf-8') as f:
-                    metadata = json.load(f)
-                if metadata.get('url') == target_url:
-                    return full_path
+# 直接通过 article_id 定位（推荐）
+article_id = "7c3989b2"  # 从 metadata.json 或 Base 读取
+article_dir = Path.home() / ".hermes" / "output" / article_id
+
+if not article_dir.exists():
+    raise Exception(f"找不到文章目录: {article_dir}")
+
+# 验证 metadata.json
+metadata_path = article_dir / "metadata.json"
+with open(metadata_path, "r", encoding="utf-8") as f:
+    metadata = json.load(f)
+
+assert metadata.get("article_id") == article_id, "article_id 不一致"
+```
+
+**如果只有文章标题没有 article_id**（候选方案）：
+```python
+def find_article_dir_by_title(target_title: str) -> Path:
+    """通过标题查找文章目录（仅当没有 article_id 时使用）"""
+    output_base = Path.home() / ".hermes" / "output"
+    
+    for dirname in output_base.iterdir():
+        if not dirname.is_dir():
+            continue
+        # 尝试从 metadata.json 读取标题
+        metadata_path = dirname / "metadata.json"
+        if metadata_path.exists():
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+            if metadata.get("title") == target_title:
+                return dirname
+        # 备用：目录名匹配
+        if dirname.name == target_title:
+            return dirname
+    
     return None
+```
+
+**错误做法**（已废弃）：
+```python
+# ❌ 不要在 /tmp/test_output/ 下搜索，也不要手动复制到 ~/.hermes/output/
+# 工具已自动完成这一步
 ```
 
 ### 3. 飞书 Base 字段格式陷阱
@@ -1784,7 +1808,7 @@ def fix_article_html(article_url: str, output_dir: str) -> dict:
     
     Args:
         article_url: 微信文章 URL
-        output_dir: 文章输出目录（如 ~/.hermes/output/文章标题/）
+        output_dir: 文章输出目录（如 ~/.hermes/output/{article_id}/，article_id 为8位UUID）
         
     Returns:
         dict: 包含 success, html_path, images_count, images_dir
@@ -1874,7 +1898,7 @@ strong {{ font-weight: bold; }}
 # 使用示例
 result = fix_article_html(
     article_url="https://mp.weixin.qq.com/s/xxx",
-    output_dir="~/.hermes/output/文章标题/"
+    output_dir="~/.hermes/output/{article_id}/"
 )
 
 if result["success"]:
@@ -2169,7 +2193,8 @@ lark-cli api PUT /open-apis/bitable/v1/apps/$FEISHU_BASE_TOKEN/tables/$FEISHU_AR
 | **v3.0.7** | **【修复】Lark CLI 路径限制**：<br>• 修复 `--json` 参数必须使用相对路径的问题<br>• 使用 `tempfile.TemporaryDirectory()` + `os.chdir()` 方案<br>• 解决 `"--file must be a relative path"` 错误 |
 | **v3.0.8** | **【新增】文章ID 字段**：<br>• 飞书 Base 新增「文章ID」字段（fldthrINWp）<br>• 用于存储 UUID 格式的文章目录名<br>• 上传脚本优先通过 article_id 查找本地目录<br>• 解决标题特殊字符导致的匹配问题 |
 | **v3.0.10** | **【修复】发布时间字段遗漏**：<br>• 修复同步流程中 `published_at` 字段遗漏问题<br>• 新增空字段自动填充 `"/"` 机制<br>• 更新字段完整性校验逻辑，区分"未获取"和"已填充/" |
-| **v3.0.11** | **【修复】自动复制到 ~/.hermes/output/**：<br>• 在阶段 1（工具提取）完成后自动复制文章目录到 `~/.hermes/output/{article_id}/`<br>• 解决上传脚本"找不到文章目录"问题<br>• 确保提取 → 上传流程无缝衔接 |
+| **v3.0.11** | **【修复】自动复制到 ~/.hermes/output/** ：<br>• 在阶段 1（工具提取）完成后自动复制文章目录到 `~/.hermes/output/{article_id}/`<br>• 解决上传脚本"找不到文章目录"问题<br>• 确保提取 → 上传流程无缝衔接 |
+| **v3.0.12** | **【重大修复】输出路径结构纠正** ：<br>• 修正 Skill 中错误的输出路径描述：工具在 `/tmp/test_output/` 下用**文章标题**建目录，而非 `{article_id}`<br>• 删除多余的手动复制代码，工具已自动复制到 `~/.hermes/output/{article_id}/`<br>• 更新文章目录查找逻辑：上传脚本应直接使用 `article_id` 定位，而非通过标题搜索<br>• 避免 `~/.hermes/output/` 下同时存在 `7c3989b2/` 和 `路易威登.../` 两个目录的混乱 |
 
 ---
 
@@ -2213,7 +2238,7 @@ lark-cli api PUT /open-apis/bitable/v1/apps/$FEISHU_BASE_TOKEN/tables/$FEISHU_AR
 | **飞书 Base 写入状态** | 成功/失败 + 记录 ID + 字段统计 | `✅ 飞书 Base 同步成功：记录ID recvhtBMKreN0I` |
 | **字段填充率** | **必须按标准格式显示** | `字段填充: 22/22 (100%)` |
 | **字段填充详情** | 已填充 vs 缺失字段列表 | 显示22个字段的填充情况 |
-| **本地输出路径** | 文件保存位置 | `~/.hermes/output/文章标题/` |
+| **本地输出路径** | 文件保存位置 | `~/.hermes/output/{article_id}/` |
 
 ### 标准输出模板（v3.0）
 

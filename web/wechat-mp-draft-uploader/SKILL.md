@@ -31,7 +31,7 @@ required_env_vars:
 
 | 参数名 | 类型 | 说明 | 示例 |
 |--------|------|------|------|
-| `article_dir` | string | 文章本地目录路径 | `~/.hermes/output/文章标题/` |
+| `article_dir` | string | 文章本地目录路径 | `~/.hermes/output/{article_id}/` |请填入文章ID（8位UUID） |
 
 ## 可选参数
 
@@ -446,7 +446,8 @@ def upload_article_from_feishu(record_id: str):
     # ... 调用 lark-cli 获取记录 ...
     
     # 2. 读取本地 article-ocr.md
-    article_dir = f"~/.hermes/output/{article_title}/"
+    # ⚠️ 使用 article_id（8位UUID）定位目录，而非标题
+    article_dir = f"~/.hermes/output/{article_id}/"
     
     # 3. 处理封面图片
     uploader = WechatDraftUploader()
@@ -672,7 +673,7 @@ article_url = url_match.group(0) if url_match else article_url_raw
 
 **诊断**: 检查文章目录下的文件大小：
 ```bash
-ls -lh ~/.hermes/output/文章标题/
+ls -lh ~/.hermes/output/{article_id}/
 # 异常：article.html 只有 2KB，article_original.html 有 3.7MB
 ```
 
@@ -797,7 +798,7 @@ content = re.sub(r'<img([^>]*?)style=["\']\s*["\']', r'<img\1', content, flags=r
 
 **诊断**: 检查文章目录下的文件：
 ```bash
-ls -la ~/.hermes/output/文章标题/
+ls -la ~/.hermes/output/{article_id}/
 ```
 
 **正常情况**:

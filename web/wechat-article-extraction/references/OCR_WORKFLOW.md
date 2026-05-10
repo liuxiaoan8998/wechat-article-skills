@@ -40,7 +40,7 @@ python /tmp/wechat-article-for-ai-pro/main.py "URL" -o ~/.hermes/output -v
 ```python
 from pathlib import Path
 
-article_dir = Path('~/.hermes/output/文章标题')
+article_dir = Path('~/.hermes/output/{article_id}')
 images_dir = article_dir / 'images'
 image_files = sorted(images_dir.glob('*.png')) + sorted(images_dir.glob('*.jpg'))
 ```

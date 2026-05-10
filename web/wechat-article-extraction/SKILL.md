@@ -287,7 +287,7 @@ segment.save(slice_path, "JPEG", quality=95)
 
 - Tool repository: https://github.com/bzd6661/wechat-article-for-ai
 - Standard specification: `STANDARD.md` (this skill folder)
-- Example output: `~/.hermes/output/瑞幸咖啡2026春季校招_方案2_wechat_article_for_ai/`
+- Example output: `~/.hermes/output/{article_id}/` (article_id 为8位UUID)
 
 ---
 

@@ -69,6 +69,20 @@ python ~/.hermes/skills/web/wechat-autoreply-manager/scripts/create_autoreply.py
 
 脚本会自动执行：查询文章 → 提取企业简称 → 自检修正 → 判断投递类型 → 检查现有规则 → 创建/追加规则 → 更新Base状态
 
+## 路径查找规则
+
+脚本通过 `find_article_directory(article_title, article_id)` 查找文章本地目录：
+
+**查找优先级**：
+1. `~/.hermes/output/{article_id}/` —— 优先通过 8位UUID 精确定位（推荐）
+2. `~/.hermes/output/{article_title}/` —— 回退到标题模糊匹配（兼容旧版本）
+3. `/tmp/test_output/{article_title}/` —— 回退到临时目录
+
+**说明**：
+- 文章提取工具已统一输出到 `~/.hermes/output/{article_id}/`
+- 若 `article_id` 为空或找不到，则回退到标题匹配确保兼容旧数据
+- 所有 Skill 引用路径时应优先使用 `article_id`，避免标题变更导致路径断裂
+
 ## 交互流程（v2.0 预览确认）
 
 ```
