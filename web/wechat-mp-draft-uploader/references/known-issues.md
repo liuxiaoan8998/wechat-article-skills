@@ -644,3 +644,117 @@ print(f"   🔄 正在为 {account_name} 重新生成草稿...")
   python3 -c "open('upload_from_feishu.py').read().encode('utf-8')" || echo "编码错误"
   ```
 - 若看到 `\ud83d\udd04` 或 `\uXXXX` 形式的转义出现在 `.py` 文件字面量中，立即替换为实际字符
+
+---
+
+## 重新运行 `process_draft.py` 但投递方式裁剪结果不变
+
+### 现象
+- 用户更新了 `image-processor` 代码（扩展 OCR 关键词），或手动修改了相关逻辑
+- 删除旧 `draft/` 目录后重新运行 `process_draft.py`
+- 结果与上次**完全一样**：本应被裁剪的图片仍未裁剪，或本不该被裁剪的仍被裁剪
+- 例：路易威登文章 `img_004.png` 含"即刻扫码申请"和二维码，但处理后仍直接复制，未裁剪投递方式
+
+### 根因（双重因素）
+
+#### 因素 1：`article-ocr.md` 数据陈旧
+`process_draft.py` **读取的是已有的 `article-ocr.md` 和切片目录**，而非实时运行 OCR。如果：
+- 之前 `image-processor` 扫描失败，切片 OCR 文本为 `[待识别]`
+- 之后即使 `image-processor` 代码更新了，**已有的 `article-ocr.md` 不会自动刷新**
+
+重新运行 `process_draft.py` 只会基于旧 OCR 数据做判断，结果自然不变。
+
+#### 因素 2：普通尺寸图片的检测盲区
+`process_draft.py` 的投递方式检测逻辑：
+1. 仅扫描有 `slices/` 子目录的**超长图**
+2. 对每个切片的 OCR 文本匹配关键词
+3. **普通尺寸图片（无切片）直接复制到 draft，不做任何 OCR 检测**
+
+这意味着：即使 `img_004.png` 含二维码和"即刻扫码申请"，只要它不是超长图（无 `slices/`），就会被直接复制，不做裁剪。
+
+### 诊断
+```bash
+# 1. 检查 article-ocr.md 是否陈旧
+grep -c "\u5f85\u8bc6\u522b" ~/.hermes/output/{article_id}/article-ocr.md
+
+# 2. 检查哪些图片有切片（超长图）
+ls ~/.hermes/output/{article_id}/images/slices/ 2>/dev/null || echo "无切片"
+
+# 3. 重新运行 image-processor 生成新的 article-ocr.md
+cd ~/.hermes/skills/web/image-processor
+python3 scripts/image_processor.py --article-dir ~/.hermes/output/{article_id}
+
+# 4. 确认 OCR 已更新后，再重新运行 process_draft.py
+cd ~/.hermes/skills/web/wechat-mp-draft-processor
+python3 scripts/process_draft.py --article-dir ~/.hermes/output/{article_id} --account joblinker
+```
+
+### 解决
+| 场景 | 操作 |
+|------|------|
+| article-ocr.md 含 `[待识别]` | **先重新运行 `image-processor`** 扫描生成新的 OCR 数据，再运行 `process_draft.py` |
+| 普通图片含投递方式但未被检测 | 当前流程不支持。需手动裁剪后替换到 `draft/images/`，或在 `image-processor` 阶段对普通图片也执行 OCR |
+
+### 与预期不符的对比
+| 用户假设 | 实际行为 |
+|----------|----------|
+| 更新 image-processor 代码后，重新运行 process_draft.py 即可生效 | ❌ 必须先重新运行 image-processor 更新 article-ocr.md |
+| 所有图片都会扫描是否含投递方式 | ❌ 仅扫描超长图的切片，普通图片直接复制 |
+
+---
+
+## 简立制作 API 服务端返回 500 错误（非网络超时）
+
+### 现象
+- 上传时**所有图片**均失败：`⚠️ 本地图片上传失败: 素材上传失败: 未知错误`
+- 远程图片同样失败：`⚠️ 远程图片处理失败: 素材上传失败: 未知错误`
+- 最终阻断：`PipelineValidationError: 部分草稿图片未成功上传并替换`
+- 与 SSL 超时不同：**没有 `ReadTimeout` 或 `TimeoutError`，API 正常响应但返回错误**
+
+### 根因
+简立制作平台 API **服务端内部故障**，返回 HTTP 500。这不是网络连接问题，也不是 API Key 无效或积分不足。
+
+### 诊断（区分不同故障类型）
+```bash
+# 1. 测试素材上传端点（最直接）
+curl -s -w "\nHTTP_CODE:%{http_code}\n" \
+  -X POST -H "Authorization: Bearer $JIANLIZHIZUO_API_KEY" \
+  -F "type=IMAGE" -F "name=test" \
+  -F "media=@/path/to/test.png" \
+  "https://mp.jianlizhizuo.cn/v1/accounts/{appid}/materials"
+
+# 服务端 500 故障的典型返回：
+# {"code":50000,"message":"上传素材失败","data":null}
+# HTTP_CODE:500
+
+# 2. 测试草稿列表端点（确认服务范围）
+curl -s -H "Authorization: Bearer $JIANLIZHIZUO_API_KEY" \
+  "https://mp.jianlizhizuo.cn/v1/accounts/{appid}/drafts"
+
+# 同样返回：{"code":50000,"message":"获取草稿列表失败"}
+```
+
+### 三种上传失败类型的对比
+
+| 特征 | 服务端 500 故障 | SSL/连接超时 | 积分不足 |
+|------|----------------|--------------|----------|
+| HTTP 状态码 | 500 | 无响应/超时 | 200 |
+| API code | `50000` | 无（抛异常） | 非 0（如 `40003`） |
+| 错误信息 | `"上传素材失败"` / `"获取草稿列表失败"` | `ReadTimeout` | `"积分不足"` |
+| 第一张图 | 失败 | 失败 | 可能成功 |
+| 所有端点 | 均 500 | 网络层问题 | 其他端点正常 |
+| 解决方式 | **等待平台修复**（通常 10-30 分钟） | 检查网络后重试 | 充值积分 |
+
+### 解决
+1. **不要反复重试** — 服务端 500 是平台内部故障，短时间内重试不会成功
+2. **等待 10-30 分钟后再次测试** — 用上述 curl 命令确认平台恢复
+3. **联系平台方** — 若持续超过 1 小时，联系简立制作确认服务状态
+4. **平台恢复后** — 重新执行上传脚本即可
+
+### 预防
+- 上传前先用 curl 快速测试平台健康状态，避免在平台故障时浪费处理时间
+- 服务端 500 与 SSL 超时、积分不足有明确区分，按上表对症下药
+
+---
+
+*最后更新: 2026-05-10*
