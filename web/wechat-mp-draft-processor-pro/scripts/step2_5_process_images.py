@@ -185,6 +185,24 @@ def rewrite_image_references(html_path: str, image_map: Dict[str, Dict]) -> Tupl
             action_label = "裁剪" if action == "cropped" else "保留"
             print(f"  ✓ 重写图片 {img_name} -> {local_path} ({action_label})")
 
+        elif action == "segmented":
+            display_parts = [p.removeprefix("draft/") for p in info.get("display_parts", [])]
+            if not display_parts:
+                print(f"  ⚠️  图片 {img_name} 标记为 segmented 但没有 display_parts，保留原样")
+                stats["skipped"] += 1
+                continue
+
+            replacement_html = "".join(
+                f'<img src="{part}" style="width:100%;max-width:100%;display:block;margin:0;"/>'
+                for part in display_parts
+            )
+            replacement_soup = BeautifulSoup(replacement_html, "html.parser")
+            for new_tag in reversed(list(replacement_soup.children)):
+                tag.insert_after(new_tag)
+            tag.decompose()
+            stats["rewritten"] += len(display_parts)
+            print(f"  ✓ 重写图片 {img_name} -> {len(display_parts)} 个堆叠片段")
+
     new_html = str(soup)
 
     # 清理因删除<img>导致的空<p>或空<section>标签

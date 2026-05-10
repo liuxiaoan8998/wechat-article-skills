@@ -20,14 +20,25 @@ import argparse
 import os
 import re
 import sys
+import json
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from PIL import Image
 except ImportError:
     print("错误：需要安装 Pillow。运行: pip install Pillow")
     sys.exit(1)
+
+
+EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+PHONE_RE = re.compile(r'1[3-9]\d{9}')
+DELIVERY_HINT_RE = re.compile(
+    r'(投递|申请|扫码|二维码|邮箱|邮件|网申|官网|咨询|联系|简历|报名)',
+    re.IGNORECASE,
+)
+MIN_KEEP_HEIGHT = 80
+DEFAULT_DISPLAY_GAP = 0
 
 
 # ============ 裁剪 ============
@@ -485,6 +496,192 @@ def _save_image(img: Image.Image, output_path: str, quality: int = 95) -> None:
         img.save(output_path, 'JPEG', quality=quality)
 
 
+def _detect_qr_boxes(img: Image.Image) -> List[Dict[str, Any]]:
+    """Detect QR code bounding boxes using pyzbar or OpenCV when available."""
+    detections: List[Dict[str, Any]] = []
+
+    # pyzbar provides the most reliable bounding boxes when installed.
+    try:
+        from pyzbar.pyzbar import decode
+        from pyzbar.wrapper import ZBarSymbol
+
+        for obj in decode(img, symbols=[ZBarSymbol.QRCODE]):
+            rect = obj.rect
+            detections.append({
+                "left": int(rect.left),
+                "top": int(rect.top),
+                "right": int(rect.left + rect.width),
+                "bottom": int(rect.top + rect.height),
+                "content": obj.data.decode('utf-8', errors='ignore'),
+                "source": "pyzbar",
+            })
+        if detections:
+            return detections
+    except Exception:
+        pass
+
+    try:
+        import cv2
+        import numpy as np
+
+        rgb = img.convert('RGB') if img.mode != 'RGB' else img
+        arr = np.array(rgb)
+        img_cv = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        detector = cv2.QRCodeDetector()
+
+        ok, decoded_info, points, _ = detector.detectAndDecodeMulti(img_cv)
+        if ok and points is not None:
+            for idx, box in enumerate(points):
+                xs = [p[0] for p in box]
+                ys = [p[1] for p in box]
+                detections.append({
+                    "left": int(min(xs)),
+                    "top": int(min(ys)),
+                    "right": int(max(xs)),
+                    "bottom": int(max(ys)),
+                    "content": decoded_info[idx] if decoded_info and idx < len(decoded_info) else "",
+                    "source": "opencv",
+                })
+            if detections:
+                return detections
+
+        single_data, single_box, _ = detector.detectAndDecode(img_cv)
+        if single_box is not None and len(single_box) > 0:
+            xs = [p[0] for p in single_box]
+            ys = [p[1] for p in single_box]
+            detections.append({
+                "left": int(min(xs)),
+                "top": int(min(ys)),
+                "right": int(max(xs)),
+                "bottom": int(max(ys)),
+                "content": single_data or "",
+                "source": "opencv",
+            })
+    except Exception:
+        pass
+
+    return detections
+
+
+def _extract_text_blocks(
+    img: Image.Image,
+    img_path: Path,
+    keywords: List[str],
+    ocr_engine: Any,
+    ocr_engine_name: str,
+) -> List[Dict[str, Any]]:
+    """Extract OCR blocks with geometry and delivery/contact hints."""
+    blocks: List[Dict[str, Any]] = []
+
+    def _append_block(text: str, left: int, top: int, right: int, bottom: int, score: Optional[float] = None) -> None:
+        clean = text.strip()
+        if not clean:
+            return
+        delivery_match = any(kw in clean for kw in keywords)
+        contact_match = bool(EMAIL_RE.search(clean) or PHONE_RE.search(clean))
+        hint_match = bool(DELIVERY_HINT_RE.search(clean))
+        blocks.append({
+            "text": clean,
+            "left": int(left),
+            "top": int(top),
+            "right": int(right),
+            "bottom": int(bottom),
+            "width": int(right - left),
+            "height": int(bottom - top),
+            "area": int(max(0, right - left) * max(0, bottom - top)),
+            "delivery_match": delivery_match,
+            "contact_match": contact_match,
+            "hint_match": hint_match,
+            "score": score,
+        })
+
+    if ocr_engine_name == "rapidocr":
+        ocr_result = ocr_engine(str(img_path))
+        if ocr_result.boxes is not None and ocr_result.txts is not None:
+            for box, text, score in zip(ocr_result.boxes, ocr_result.txts, ocr_result.scores):
+                xs = [p[0] for p in box]
+                ys = [p[1] for p in box]
+                _append_block(text, min(xs), min(ys), max(xs), max(ys), score)
+    elif ocr_engine_name == "pytesseract":
+        data = ocr_engine.image_to_data(
+            img, output_type=ocr_engine.Output.DICT, lang='chi_sim+eng'
+        )
+        for i, text in enumerate(data['text']):
+            left = data['left'][i]
+            top = data['top'][i]
+            width = data['width'][i]
+            height = data['height'][i]
+            _append_block(text, left, top, left + width, top + height)
+
+    return blocks
+
+
+def _merge_ranges(ranges: List[Tuple[int, int]], max_height: int) -> List[Tuple[int, int]]:
+    """Merge overlapping vertical ranges and clamp to image bounds."""
+    if not ranges:
+        return []
+
+    normalized = sorted(
+        [(max(0, top), min(max_height, bottom)) for top, bottom in ranges if bottom > top],
+        key=lambda item: item[0],
+    )
+    if not normalized:
+        return []
+
+    merged = [normalized[0]]
+    for top, bottom in normalized[1:]:
+        last_top, last_bottom = merged[-1]
+        if top <= last_bottom:
+            merged[-1] = (last_top, max(last_bottom, bottom))
+        else:
+            merged.append((top, bottom))
+    return merged
+
+
+def _compute_keep_ranges(removal_ranges: List[Tuple[int, int]], image_height: int) -> List[Tuple[int, int]]:
+    """Convert removal ranges to remaining visible vertical segments."""
+    keep_ranges: List[Tuple[int, int]] = []
+    cursor = 0
+    for top, bottom in removal_ranges:
+        if top - cursor >= MIN_KEEP_HEIGHT:
+            keep_ranges.append((cursor, top))
+        cursor = max(cursor, bottom)
+    if image_height - cursor >= MIN_KEEP_HEIGHT:
+        keep_ranges.append((cursor, image_height))
+    return keep_ranges
+
+
+def _write_image_segment(
+    img: Image.Image,
+    output_dir: Path,
+    base_name: str,
+    ext: str,
+    index: int,
+    top: int,
+    bottom: int,
+) -> Path:
+    """Crop and save a kept image segment."""
+    segment = img.crop((0, top, img.size[0], bottom))
+    segment_path = output_dir / f"{base_name}_part_{index:02d}{ext}"
+    _save_image(segment, str(segment_path))
+    return segment_path
+
+
+def _write_removed_segment(
+    img: Image.Image,
+    output_dir: Path,
+    base_name: str,
+    ext: str,
+    index: int,
+    top: int,
+    bottom: int,
+) -> Path:
+    removed = img.crop((0, top, img.size[0], bottom))
+    removed_path = output_dir / f"{base_name}_removed_{index:02d}{ext}"
+    _save_image(removed, str(removed_path))
+    return removed_path
+
+
 # ============ 文章图片批量处理 ============
 
 def process_article_images(
@@ -492,25 +689,31 @@ def process_article_images(
     keywords: List[str],
     delivery_ratio: float = 0.7,
     buffer_px: int = 30,
+    qr_padding: int = 24,
+    min_qr_size: int = 120,
+    display_gap: int = DEFAULT_DISPLAY_GAP,
     project_root: Optional[str] = None,
 ) -> dict:
     """
     批量处理公众号文章的图片，识别并移除投递方式相关内容。
 
-    三分类判定：
-      A类（纯投递图）: 关键词文本块面积占比 >= delivery_ratio → 整图移除到 delivery/
-      B类（混合图）:   有关键词但占比 < delivery_ratio → 按关键词上方裁剪
-      C类（正文图）:   无关键词 → 原样保留
+    新策略：
+      A类（纯投递图）: 图片主体就是投递二维码/投递说明 → 整图移除
+      B类（混合图）:   底部或局部存在投递块 → 切成多个可显示片段，不强制重拼成文件
+      C类（正文图）:   无投递信息 → 原样保留
 
     Args:
         article_id: 文章ID
         keywords: 检测关键词列表
         delivery_ratio: 判定为纯投递图的面积占比阈值（0-1）
         buffer_px: 裁剪缓冲像素
+        qr_padding: 二维码周围额外移除像素
+        min_qr_size: 认为是主要二维码块的最小边长
+        display_gap: 前端显示多个片段时建议间距
         project_root: 项目根目录，默认 ~/.hermes/output
 
     Returns:
-        dict: 处理结果，包含 image_map 和各分类统计
+        dict: 处理结果，包含 image_map、segments 和展示清单
     """
     # 确定项目路径
     if project_root is None:
@@ -527,11 +730,14 @@ def process_article_images(
         "images_dir": str(images_dir),
         "total_images": 0,
         "class_a_removed": [],
-        "class_b_cropped": [],
+        "class_b_segmented": [],
         "class_c_kept": [],
         "failed": [],
         "image_map": {},
+        "display_manifest": {},
         "ocr_available": False,
+        "qr_available": False,
+        "display_gap": display_gap,
     }
 
     if not images_dir.exists():
@@ -588,172 +794,166 @@ def process_article_images(
             w, h = img.size
             total_area = w * h
 
-            # 如果没有 OCR，全部按 C 类处理
-            if not result["ocr_available"]:
+            base_name = img_path.stem
+            ext = img_path.suffix or ".jpg"
+            qr_boxes = _detect_qr_boxes(img)
+            if qr_boxes:
+                result["qr_available"] = True
+
+            # 如果没有 OCR 和二维码能力，全部按 C 类处理
+            if not result["ocr_available"] and not qr_boxes:
                 output_path = draft_images_dir / img_name
                 _save_image(img, str(output_path))
                 result["class_c_kept"].append(img_name)
                 result["image_map"][img_name] = {
                     "action": "kept",
-                    "reason": "ocr_unavailable",
+                    "reason": "ocr_and_qr_unavailable",
                     "original_path": str(img_path.relative_to(article_dir)),
                     "draft_path": str(output_path.relative_to(article_dir)),
+                    "display_parts": [str(output_path.relative_to(article_dir))],
                 }
                 print(f"   → 原样保留 (OCR 不可用)")
                 continue
 
-            # OCR 识别
-            matched_blocks = []  # [{"text": str, "top": int, "bottom": int, "area": int}]
-            if ocr_engine_name == "rapidocr":
-                ocr_result = ocr_engine(str(img_path))
-                # RapidOCROutput: boxes(N,4,2), txts, scores
-                # 处理空检测结果
-                if ocr_result.boxes is not None and ocr_result.txts is not None:
-                    for box, text, score in zip(ocr_result.boxes, ocr_result.txts, ocr_result.scores):
-                        if not text.strip():
-                            continue
-                        # 计算边界框
-                        xs = [p[0] for p in box]
-                        ys = [p[1] for p in box]
-                        block_left = int(min(xs))
-                        block_top = int(min(ys))
-                        block_right = int(max(xs))
-                        block_bottom = int(max(ys))
-                        block_width = block_right - block_left
-                        block_height = block_bottom - block_top
-                        block_area = block_width * block_height
-                        for kw in keywords:
-                            if kw in text:
-                                matched_blocks.append({
-                                    "text": text,
-                                    "top": block_top,
-                                    "bottom": block_bottom,
-                                    "area": block_area,
-                                })
-                                break
-            elif ocr_engine_name == "pytesseract":
-                data = ocr_engine.image_to_data(
-                    img, output_type=ocr_engine.Output.DICT, lang='chi_sim+eng'
+            text_blocks = []
+            if result["ocr_available"]:
+                text_blocks = _extract_text_blocks(
+                    img=img,
+                    img_path=img_path,
+                    keywords=keywords,
+                    ocr_engine=ocr_engine,
+                    ocr_engine_name=ocr_engine_name,
                 )
-                for i, text in enumerate(data['text']):
-                    if not text.strip():
-                        continue
-                    for kw in keywords:
-                        if kw in text:
-                            block_top = data['top'][i]
-                            block_height = data['height'][i]
-                            block_width = data['width'][i]
-                            block_area = block_width * block_height
-                            matched_blocks.append({
-                                "text": text,
-                                "top": block_top,
-                                "bottom": block_top + block_height,
-                                "area": block_area,
-                            })
-                            break
 
-            if not matched_blocks:
-                # C类: 无关键词，原样保留
+            matched_blocks = [
+                block for block in text_blocks
+                if block["delivery_match"] or block["contact_match"] or block["hint_match"]
+            ]
+
+            removal_ranges: List[Tuple[int, int]] = []
+            keywords_found = list({block["text"] for block in matched_blocks if block["delivery_match"] or block["contact_match"]})
+
+            if matched_blocks:
+                for block in matched_blocks:
+                    top = max(0, block["top"] - buffer_px)
+                    bottom = min(h, block["bottom"] + buffer_px)
+                    removal_ranges.append((top, bottom))
+
+            qr_area_ratio = 0.0
+            if qr_boxes:
+                qr_boxes = [box for box in qr_boxes if (box["right"] - box["left"]) >= min_qr_size and (box["bottom"] - box["top"]) >= min_qr_size]
+                for box in qr_boxes:
+                    top = max(0, box["top"] - qr_padding)
+                    bottom = min(h, box["bottom"] + qr_padding)
+                    removal_ranges.append((top, bottom))
+                if qr_boxes:
+                    qr_area_ratio = sum((box["right"] - box["left"]) * (box["bottom"] - box["top"]) for box in qr_boxes) / total_area
+
+            if not removal_ranges:
+                # C类: 无关键词/二维码，原样保留
                 output_path = draft_images_dir / img_name
                 _save_image(img, str(output_path))
                 result["class_c_kept"].append(img_name)
                 result["image_map"][img_name] = {
                     "action": "kept",
-                    "reason": "no_keywords_found",
+                    "reason": "no_delivery_signals_found",
                     "original_path": str(img_path.relative_to(article_dir)),
                     "draft_path": str(output_path.relative_to(article_dir)),
+                    "display_parts": [str(output_path.relative_to(article_dir))],
+                    "text_blocks": len(text_blocks),
+                    "qr_boxes": len(qr_boxes),
                 }
-                print(f"   → 原样保留 (未检测到关键词)")
+                print(f"   → 原样保留 (未检测到投递信息)")
                 continue
 
-            # 计算关键词相关区域的总面积（去重：合并重叠的文本块）
-            # 简单策略：按 Y 轴合并重叠区域
-            matched_blocks.sort(key=lambda x: x["top"])
-            merged_areas = []
-            current_top, current_bottom = matched_blocks[0]["top"], matched_blocks[0]["bottom"]
-            for blk in matched_blocks[1:]:
-                if blk["top"] <= current_bottom:
-                    # 重叠，合并
-                    current_bottom = max(current_bottom, blk["bottom"])
-                else:
-                    merged_areas.append((current_top, current_bottom))
-                    current_top, current_bottom = blk["top"], blk["bottom"]
-            merged_areas.append((current_top, current_bottom))
+            merged_ranges = _merge_ranges(removal_ranges, h)
+            removed_height = sum(bottom - top for top, bottom in merged_ranges)
+            removal_ratio = removed_height / h if h else 0
 
-            keyword_area = sum((b - t) * w for t, b in merged_areas)
-            keyword_ratio = keyword_area / total_area
+            print(f"   命中文本块: {len(matched_blocks)}")
+            print(f"   二维码块: {len(qr_boxes)}")
+            print(f"   移除高度占比: {removal_ratio*100:.1f}%")
 
-            # 提取命中的关键词文本（去重）
-            keywords_found = list(set(b["text"] for b in matched_blocks))
-
-            print(f"   命中关键词: {keywords_found}")
-            print(f"   关键词区域占比: {keyword_ratio*100:.1f}%")
-
-            # 判定分类
-            if keyword_ratio >= delivery_ratio:
+            if removal_ratio >= delivery_ratio:
                 # A类: 纯投递图，整图移除
                 delivery_path = delivery_dir / img_name
                 _save_image(img, str(delivery_path))
                 result["class_a_removed"].append(img_name)
                 result["image_map"][img_name] = {
                     "action": "removed",
-                    "reason": f"delivery_content_{keyword_ratio*100:.0f}%",
+                    "reason": f"delivery_content_{removal_ratio*100:.0f}%",
                     "original_path": str(img_path.relative_to(article_dir)),
                     "keywords_found": keywords_found,
-                    "keyword_ratio": round(keyword_ratio, 3),
+                    "removal_ratio": round(removal_ratio, 3),
+                    "qr_area_ratio": round(qr_area_ratio, 3),
+                    "removal_ranges": merged_ranges,
                     "delivery_path": str(delivery_path.relative_to(article_dir)),
+                    "display_parts": [],
                 }
                 print(f"   → 整图移除到 delivery/ (纯投递图)")
 
             else:
-                # B类: 混合图，按关键词上方裁剪
-                # 找到最上方的关键词位置，保留其上方内容
-                first_keyword_y = min(b["top"] for b in matched_blocks)
-                crop_y = max(0, first_keyword_y - buffer_px)
-
-                if crop_y <= 0:
-                    # 关键词在顶部附近，无法裁剪上方 → 视为纯投递图
+                keep_ranges = _compute_keep_ranges(merged_ranges, h)
+                if not keep_ranges:
                     delivery_path = delivery_dir / img_name
                     _save_image(img, str(delivery_path))
                     result["class_a_removed"].append(img_name)
                     result["image_map"][img_name] = {
                         "action": "removed",
-                        "reason": "keywords_at_top",
+                        "reason": "no_keep_ranges_after_segmentation",
                         "original_path": str(img_path.relative_to(article_dir)),
                         "keywords_found": keywords_found,
-                        "keyword_ratio": round(keyword_ratio, 3),
+                        "removal_ratio": round(removal_ratio, 3),
+                        "removal_ranges": merged_ranges,
                         "delivery_path": str(delivery_path.relative_to(article_dir)),
+                        "display_parts": [],
                     }
-                    print(f"   → 整图移除到 delivery/ (关键词在顶部)")
+                    print(f"   → 整图移除到 delivery/ (无可保留正文片段)")
                     continue
 
-                # 保留上部（正文）
-                cropped = img.crop((0, 0, w, crop_y))
-                draft_path = draft_images_dir / img_name
-                _save_image(cropped, str(draft_path))
+                display_parts: List[str] = []
+                segment_records: List[Dict[str, Any]] = []
+                removed_parts: List[str] = []
 
-                # 被裁掉的下部（投递区）
-                delivery_crop = img.crop((0, crop_y, w, h))
-                stem = img_path.stem
-                suffix = img_path.suffix
-                delivery_crop_name = f"{stem}_delivery{suffix}"
-                delivery_crop_path = delivery_dir / delivery_crop_name
-                _save_image(delivery_crop, str(delivery_crop_path))
+                for idx, (top, bottom) in enumerate(keep_ranges, 1):
+                    part_path = _write_image_segment(
+                        img, draft_images_dir, base_name, ext, idx, top, bottom
+                    )
+                    display_parts.append(str(part_path.relative_to(article_dir)))
+                    segment_records.append({
+                        "path": str(part_path.relative_to(article_dir)),
+                        "top": top,
+                        "bottom": bottom,
+                        "height": bottom - top,
+                    })
 
-                result["class_b_cropped"].append(img_name)
+                for idx, (top, bottom) in enumerate(merged_ranges, 1):
+                    removed_path = _write_removed_segment(
+                        img, delivery_dir, base_name, ext, idx, top, bottom
+                    )
+                    removed_parts.append(str(removed_path.relative_to(article_dir)))
+
+                result["class_b_segmented"].append(img_name)
                 result["image_map"][img_name] = {
-                    "action": "cropped",
-                    "reason": "delivery_at_bottom",
+                    "action": "segmented",
+                    "reason": "delivery_blocks_removed",
                     "original_path": str(img_path.relative_to(article_dir)),
                     "keywords_found": keywords_found,
-                    "keyword_ratio": round(keyword_ratio, 3),
-                    "crop_y": crop_y,
-                    "draft_path": str(draft_path.relative_to(article_dir)),
-                    "delivery_path": str(delivery_crop_path.relative_to(article_dir)),
+                    "removal_ratio": round(removal_ratio, 3),
+                    "qr_area_ratio": round(qr_area_ratio, 3),
+                    "removal_ranges": merged_ranges,
+                    "keep_ranges": keep_ranges,
+                    "segments": segment_records,
+                    "display_parts": display_parts,
+                    "removed_parts": removed_parts,
+                    "display_mode": "stacked_segments",
                 }
-                print(f"   → 底部裁剪 (保留上部 0-{crop_y}px)")
-                print(f"     正文图: {draft_path.name}")
-                print(f"     投递图: {delivery_crop_name}")
+                result["display_manifest"][img_name] = {
+                    "mode": "stacked_segments",
+                    "gap": display_gap,
+                    "parts": display_parts,
+                }
+                print(f"   → 切分为 {len(display_parts)} 个显示片段，移除 {len(merged_ranges)} 个投递块")
 
         except Exception as e:
             print(f"   ❌ 处理失败: {e}")
@@ -764,21 +964,24 @@ def process_article_images(
                 "original_path": str(img_path.relative_to(article_dir)),
             }
 
-    # 保存 image_map.json
+    # 保存 image_map.json 与 display_manifest.json
     map_path = draft_dir / "image_map.json"
-    import json
     with open(map_path, 'w', encoding='utf-8') as f:
         json.dump(result["image_map"], f, ensure_ascii=False, indent=2)
+    display_manifest_path = draft_dir / "display_manifest.json"
+    with open(display_manifest_path, 'w', encoding='utf-8') as f:
+        json.dump(result["display_manifest"], f, ensure_ascii=False, indent=2)
 
     # 输出总结
     print("\n" + "=" * 50)
     print("📊 图片处理总结")
     print(f"   总图片数: {result['total_images']}")
     print(f"   A类 整图移除: {len(result['class_a_removed'])} 张")
-    print(f"   B类 底部裁剪: {len(result['class_b_cropped'])} 张")
+    print(f"   B类 分段保留: {len(result['class_b_segmented'])} 张")
     print(f"   C类 原样保留: {len(result['class_c_kept'])} 张")
     print(f"   处理失败: {len(result['failed'])} 张")
     print(f"   映射表: {map_path}")
+    print(f"   展示清单: {display_manifest_path}")
     print("=" * 50)
 
     return result
@@ -886,11 +1089,14 @@ def main():
     info_parser.add_argument('--input', '-i', required=True)
 
     # process-article-images
-    pai_parser = subparsers.add_parser('process-article-images', help='批量处理公众号文章图片（识别并移除投递方式）')
+    pai_parser = subparsers.add_parser('process-article-images', help='批量处理公众号文章图片（识别并移除投递方式/二维码块）')
     pai_parser.add_argument('--article-id', '-a', required=True, help='文章ID')
-    pai_parser.add_argument('--keywords', '-k', nargs='+', default=["投递方式", "网申通道", "简历投递", "扫码投递", "申请方式", "网申", "二维码"], help='检测关键词列表')
+    pai_parser.add_argument('--keywords', '-k', nargs='+', default=["投递方式", "网申通道", "简历投递", "扫码投递", "申请方式", "网申", "二维码", "扫码申请", "投递邮箱", "咨询邮箱"], help='检测关键词列表')
     pai_parser.add_argument('--delivery-ratio', type=float, default=0.7, help='纯投递图面积占比阈值（默认0.7）')
     pai_parser.add_argument('--buffer', type=int, default=30, help='裁剪缓冲像素（默认30）')
+    pai_parser.add_argument('--qr-padding', type=int, default=24, help='二维码上下扩展移除像素（默认24）')
+    pai_parser.add_argument('--min-qr-size', type=int, default=120, help='识别为主要二维码块的最小边长（默认120）')
+    pai_parser.add_argument('--display-gap', type=int, default=0, help='多个显示片段堆叠时建议的间距（默认0）')
 
     args = parser.parse_args()
 
@@ -971,6 +1177,9 @@ def main():
             keywords=args.keywords,
             delivery_ratio=args.delivery_ratio,
             buffer_px=args.buffer,
+            qr_padding=args.qr_padding,
+            min_qr_size=args.min_qr_size,
+            display_gap=args.display_gap,
         )
 
 

@@ -1,7 +1,8 @@
 ---
 name: image-processor
 description: >
-  通用图片处理器。支持截图/裁剪、图片拼接、长图切片与重新拼接、格式转换。
+  通用图片处理器。支持截图/裁剪、图片拼接、长图切片与重新拼接、格式转换，
+  并支持识别招聘文章图片中的投递二维码/投递邮箱/投递说明块，将原图切成可堆叠显示的正文片段。
   可通过命令行调用，也可通过 Hermes 工具调用。
   通用于微信公众号文章图片处理、模板图片加工等场景。
 required_env_vars: []
@@ -21,6 +22,24 @@ required_commands:
 | **切片 (Slice)** | 长图按最大高度切片，支持重叠区域 |
 | **重拼 (Stitch Slices)** | 将切片重新拼接为长图 |
 | **转换 (Convert)** | 格式转换、RGBA→RGB、实际格式检测 |
+| **投递块分段 (Process Article Images)** | 识别投递二维码/邮箱/网申说明，输出可堆叠显示的正文片段，而不是强制重拼成长图文件 |
+
+## 当前目标
+
+这个 skill 现在优先解决三类公众号招聘图：
+
+1. **纯二维码投递图**
+   例：只有二维码和“即刻扫码申请”之类提示。
+   处理：整图移除。
+
+2. **纯投递说明图**
+   例：只有“投递简历邮箱”“联系方式”等说明条。
+   处理：整图移除。
+
+3. **混合图中的投递块**
+   例：长图正文里穿插招聘官网二维码、投递邮箱、咨询方式。
+   处理：切掉投递块，保留上半段/下半段多个正文片段。
+   输出：多个片段文件，前端显示时直接纵向堆叠，不要求生成一张新的物理长图。
 
 ## 实战技巧
 
@@ -138,9 +157,10 @@ python image_processor.py info --input ~/img.jpg
 # 11. 批量处理公众号文章图片（识别并移除投递方式内容）
 python image_processor.py process-article-images \
   --article-id 8f16cbbc \
-  --keywords "投递方式" "网申通道" "简历投递" "扫码投递" "申请方式" "网申" "二维码" \
+  --keywords "投递方式" "网申通道" "简历投递" "扫码投递" "申请方式" "网申" "二维码" "扫码申请" "投递邮箱" \
   --delivery-ratio 0.7 \
-  --buffer 30
+  --buffer 30 \
+  --qr-padding 24
 ```
 
 ### 方式二：Hermes 交互式处理
@@ -285,18 +305,20 @@ python image_processor.py convert --input img.webp --output img.png
 
 专为公众号运营工作流设计，自动识别文章图片中的投递方式内容并分类处理：
 
-**A类（纯投递图）**: 关键词文本块面积占图片总面积的 >= 70%（默认）→ 整图移除到 `draft/images/delivery/`
+**A类（纯投递图）**: 二维码/投递说明占据图片主体 → 整图移除到 `draft/delivery/`
 
-**B类（混合图）**: 有关键词但占比 < 70% → 按关键词上方裁剪，保留上部正文，下部投递区单独保存到 `delivery/`
+**B类（混合图）**: 图片中仅部分区域是投递块 → 将原图切成多个正文片段，投递块单独保存到 `draft/delivery/`
 
 **C类（正文图）**: 未检测到关键词 → 原样复制到 `draft/images/`
 
 ```bash
 python image_processor.py process-article-images \
   --article-id 8f16cbbc \
-  --keywords "投递方式" "网申通道" "简历投递" "扫码投递" "申请方式" "网申" "二维码" \
+  --keywords "投递方式" "网申通道" "简历投递" "扫码投递" "申请方式" "网申" "二维码" "扫码申请" "投递邮箱" \
   --delivery-ratio 0.7 \
-  --buffer 30
+  --buffer 30 \
+  --qr-padding 24 \
+  --min-qr-size 120
 ```
 
 | 参数 | 说明 | 默认值 |
@@ -304,15 +326,20 @@ python image_processor.py process-article-images \
 | `--article-id` | 文章ID | 必填 |
 | `--keywords` | 检测关键词列表 | 见上方 |
 | `--delivery-ratio` | 判定为纯投递图的面积占比阈值 | 0.7 |
-| `--buffer` | 裁剪时关键词上方缓冲像素 | 30 |
+| `--buffer` | 文本块上下扩展像素 | 30 |
+| `--qr-padding` | 二维码块上下扩展像素 | 24 |
+| `--min-qr-size` | 识别为主要二维码块的最小边长 | 120 |
+| `--display-gap` | 多片段堆叠时建议间距 | 0 |
 
 **输出结果**：
 ```
 ~/.hermes/output/{article_id}/
 ├── draft/
-│   ├── images/              # 处理后的正文图片
-│   │   └── delivery/        # 被移除/裁掉的投递区域
-│   └── image_map.json     # 图片处理映射表
+│   ├── images/              # 处理后的正文图片 / 分段片段
+│   │   └── *_part_01.jpg    # 分段后的正文片段
+│   ├── delivery/            # 被移除/裁掉的投递区域
+│   ├── image_map.json       # 图片处理映射表
+│   └── display_manifest.json # 前端如何堆叠显示片段
 └── images/                # 原始图片（不变）
 ```
 
@@ -336,28 +363,21 @@ pip install pytesseract
 ```
 原始文章图片
     ↓
-OCR 识别，找到"投递方式"位置
+OCR + 二维码检测，找到投递块
     ↓
-使用 crop-ocr 裁剪掉投递方式区域
+若整张都是投递内容 → 整图移除
     ↓
-重新拼接为新长图
+若只有局部是投递块 → 切成多个正文片段
     ↓
-用于公众号上传
+上传 / 渲染时直接纵向堆叠这些片段
 ```
 
 **实际命令**：
 ```bash
-# 1. 切片（如果图片已经切片）
-python image_processor.py stitch-slices \
-  --input-dir ~/.hermes/output/abc123/slices/ \
-  --output ~/.hermes/output/abc123/draft/images/combined.jpg
-```bash
-# 2. 或者直接裁剪原图
-python image_processor.py crop-ocr \
-  --input ~/.hermes/output/abc123/images/img_001.jpg \
-  --output ~/.hermes/output/abc123/draft/images/img_001.jpg \
-  --keywords "投递方式" "简历投递" --direction above \
-  --fallback-ratio 0.88
+# 直接按文章批量处理
+python image_processor.py process-article-images \
+  --article-id abc123 \
+  --keywords "投递方式" "简历投递" "二维码" "扫码申请" "投递邮箱"
 ```
 
 ### 场景 2：二创文章图片加工
@@ -445,9 +465,10 @@ NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' 
 ### 没有检测到关键词，但图片确实含投递方式
 
 可能原因：
-1. **OCR 识别失败**：图片中投递方式是纯图片（无文字），或文字过小/模糊。可尝试降低 `--delivery-ratio` 阈值或人工 vision 检查。
+1. **OCR 识别失败**：图片中投递方式是纯图片（无文字），或文字过小/模糊。可尝试降低 `--delivery-ratio` 阈值、增大 `--qr-padding`，或人工 vision 检查。
 2. **关键词不匹配**：自定义关键词未覆盖。可扩展 `--keywords` 列表，如添加 `"申请"`、`"报名"`、`"投递"` 等同义词。
-3. **rapidocr 置信度过滤**：当前实现未按置信度过滤。若遇到漏检，可检查 rapidocr 原始输出确认是否识别到了文字但置信度过低。
+3. **只有二维码没有文字**：若环境安装了 `pyzbar` 或 `opencv-python`，脚本会直接按二维码框辅助切分；否则会更依赖 OCR 文本提示。
+4. **rapidocr 置信度过滤**：当前实现未按置信度过滤。若遇到漏检，可检查 rapidocr 原始输出确认是否识别到了文字但置信度过低。
 
 ### crop-ocr 与 process-article-images 的 OCR 引擎差异
 
@@ -465,3 +486,4 @@ NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' 
 | v1.0 | 2026-04-28 | 初始版本，支持裁剪、拼接、切片、转换、OCR定位裁剪 |
 | v1.1 | 2026-04-29 | 添加快速交互模式指南，支持"用户发图→返回处理图"场景 |
 | v1.2 | 2026-04-29 | process-article-images 支持双引擎 OCR（优先 rapidocr，回退 pytesseract），无需外部 tesseract 二进制 |
+| v1.3 | 2026-05-09 | process-article-images 重构为“投递块分段”模型：支持二维码框辅助识别、纯投递图整图移除、混合图切成可堆叠显示的多个正文片段，并新增 `display_manifest.json` |
