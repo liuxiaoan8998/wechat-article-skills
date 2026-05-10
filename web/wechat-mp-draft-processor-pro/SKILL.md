@@ -126,7 +126,7 @@ python3 scripts/step2_clean_header_noise.py <article_id>
 
 ### 步骤2.5: 图片智能处理
 
-**目的**：识别并处理正文图片（移除/裁剪投递方式图片），重写 HTML 图片引用为本地路径。
+**目的**：识别并处理正文图片（移除/裁剪投递方式图片），重写 HTML 图片引用为本地路径，并修复微信懒加载占位样式。
 
 **位置**: `scripts/step2_5_process_images.py`
 
@@ -139,6 +139,8 @@ python3 scripts/step2_clean_header_noise.py <article_id>
 3. 重写 `draft.html` 中的图片引用：
    - 将微信 CDN 地址（`src` 和 `data-src`）替换为本地路径 `images/img_xxx.png`
    - 移除微信懒加载属性（`data-w`、`data-ratio`、`data-index` 等）
+   - 修复懒加载占位样式：优先使用 `data-original-style`，否则将固定像素宽度替换为 `width: 100%`
+   - 移除 `_width` 属性
 4. 清理因删除图片导致的空 `<p>` 和 `<section>` 标签
 
 **输入/输出**:
@@ -441,13 +443,67 @@ grep -c 'mp-common-profile' ~/.hermes/output/{article_id}/draft/draft.html
    python3 -c "from bs4 import BeautifulSoup; print('bs4 OK')"
    ```
 
-### 7. 前次失败运行残留的 draft 文件
-**问题**: 若前次运行因依赖缺失（如 bs4 未装）导致步骤2/3失败，`draft/` 目录已存在不完整的 `draft.html`。再次运行 `process.py` 时，虽然 step0 会覆盖 draft.html，但 step3 的 `has_promotion_content()` 若检测到旧内容可能跳过追加。
-**解决**: 重试前建议清理旧 draft：
+### 8. `data-index` 属性映射错位导致图片丢失 ⚠️ 严重
+**问题**: `step2_5_process_images.py` 在将 HTML 中的 `<img>` 标签映射到 `images/img_*.png` 时，优先使用了 `data-index` 属性计算图片名（`img_{data_index + 1}.png`）。但微信 HTML 中 `data-index` 不一定从 0 或 1 开始（例如路易威登文章从 `3` 开始），导致映射错位：
+
+| 实际图片 | data-index | 错误映射为 | 结果 |
+|---------|-----------|-----------|------|
+| img_001 | 3 | img_004 | ❌ 被替换成 img_004 的分段，完全丢失 |
+| img_002 | 4 | img_005（不存在）| 碰巧 fallback 到 img_002 |
+
+**解决**:
+- **优先使用 fallback_idx（按 HTML 中 `<img>` 标签的先后顺序）进行映射**，这是唯一可靠的对应方式
+- `data-index` / `data-report-img-idx` 降级为最后候补，且仅在值 ≤10 时才尝试
+- 已在 `_info_for_img()` 中调整候选优先级顺序
+
+**诊断**: 若发现 draft.html 中图片顺序错乱或某张图片消失，检查原始 HTML 的 `data-index` 起始值：
 ```bash
-rm -rf ~/.hermes/output/{article_id}/draft
-python3 scripts/process.py {article_id}
+grep -o 'data-index="[0-9]*"' article_original.html | head -5
 ```
+若起始值不为 0 或 1，即存在此问题。
+
+**预防**:
+- 不要假设微信 HTML 的 `data-index` 是连续从 0/1 开始的
+- 图片与 img_*.png 的映射应以 DOM 顺序（fallback_idx）为准
+
+### 9. 微信懒加载占位样式导致图片消失 ⚠️ 严重
+**问题**: 微信原文使用懒加载机制，`<img>` 标签的 `style` 属性被设为占位样式（如 `width: 1px !important`），而真实宽度保存在 `data-original-style`（如 `width: 100%`）中。正常页面加载时，JavaScript 会将占位样式替换为真实样式。但上传到微信公众号草稿箱后，没有 JS 执行环境，图片始终保持 `1px` 宽度，用户看不到图片。
+
+**解决**:
+- `step2_5_process_images.py` 在重写图片引用时自动检测并修复：
+  1. 若存在 `data-original-style`，恢复为该值并删除 `data-original-style`
+  2. 否则，将 `style` 中的固定像素宽度（如 `width: 677px !important`）替换为 `width: 100%`
+  3. 移除微信内部的 `_width` 属性
+
+**诊断**: 若草稿预览时某些图片位置正常但内容空白（或只有 1px 宽的细线），检查原始 HTML 的样式：
+```bash
+grep -o 'style="[^"]*1px[^"]*"' article_original.html | head -5
+```
+
+**预防**:
+- 不要直接使用原始 HTML 中的 `style` 属性，必须经过惯性加载样式修复步骤
+- 处理图片时总是检查 `data-original-style` 是否存在
+**问题**: `step2_5_process_images.py` 在将 HTML 中的 `<img>` 标签映射到 `images/img_*.png` 时，优先使用了 `data-index` 属性计算图片名（`img_{data_index + 1}.png`）。但微信 HTML 中 `data-index` 不一定从 0 或 1 开始（例如路易威登文章从 `3` 开始），导致映射错位：
+
+| 实际图片 | data-index | 错误映射为 | 结果 |
+|---------|-----------|-----------|------|
+| img_001 | 3 | img_004 | ❌ 被替换成 img_004 的分段，完全丢失 |
+| img_002 | 4 | img_005（不存在）| 碰巧 fallback 到 img_002 |
+
+**解决**:
+- **优先使用 fallback_idx（按 HTML 中 `<img>` 标签的先后顺序）进行映射**，这是唯一可靠的对应方式
+- `data-index` / `data-report-img-idx` 降级为最后候补，且仅在值 ≤10 时才尝试
+- 已在 `_info_for_img()` 中调整候选优先级顺序
+
+**诊断**: 若发现 draft.html 中图片顺序错乱或某张图片消失，检查原始 HTML 的 `data-index` 起始值：
+```bash
+grep -o 'data-index="[0-9]*"' article_original.html | head -5
+```
+若起始值不为 0 或 1，即存在此问题。
+
+**预防**:
+- 不要假设微信 HTML 的 `data-index` 是连续从 0/1 开始的
+- 图片与 img_*.png 的映射应以 DOM 顺序（fallback_idx）为准
 
 ## 后续步骤
 

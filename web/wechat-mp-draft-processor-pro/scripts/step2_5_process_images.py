@@ -140,12 +140,19 @@ def rewrite_image_references(html_path: str, image_map: Dict[str, Dict]) -> Tupl
                 if "." in filename:
                     candidates.append(f"{Path(filename).stem}.png")
                     candidates.append(f"{Path(filename).stem}.jpg")
-        data_index = tag.get("data-index") or tag.get("data-report-img-idx")
-        if data_index is not None and str(data_index).isdigit():
-            candidates.append(f"img_{int(data_index) + 1:03d}.png")
-            candidates.append(f"img_{int(data_index) + 1:03d}.jpg")
+
+        # 优先使用顺序匹配（fallback_idx），因为 data-index 可能从任意数字开始，不可靠
         candidates.append(f"img_{fallback_idx:03d}.png")
         candidates.append(f"img_{fallback_idx:03d}.jpg")
+
+        # data-index / data-report-img-idx 作为最后候选（仅当其值从 0 开始时才可靠）
+        data_index = tag.get("data-index") or tag.get("data-report-img-idx")
+        if data_index is not None and str(data_index).isdigit():
+            di = int(data_index)
+            # 只有当 data-index 明显是从 0 或 1 开始的连续编号时才使用
+            if di <= 10:
+                candidates.append(f"img_{di + 1:03d}.png")
+                candidates.append(f"img_{di + 1:03d}.jpg")
 
         for name in candidates:
             if name in image_map:
@@ -181,6 +188,20 @@ def rewrite_image_references(html_path: str, image_map: Dict[str, Dict]) -> Tupl
             for attr in ("data-w", "data-ratio", "data-index", "data-report-img-idx"):
                 if tag.has_attr(attr):
                     del tag[attr]
+
+            # 修复微信懒加载占位样式（如 width: 1px !important）
+            if tag.has_attr("data-original-style"):
+                tag["style"] = tag["data-original-style"]
+                del tag["data-original-style"]
+            elif tag.has_attr("style"):
+                style = tag["style"]
+                # 将固定像素宽度替换为 100%
+                style = re.sub(r'width:\s*\d+px\s*!important;', 'width: 100%;', style)
+                tag["style"] = style.strip()
+            # 移除微信内部的 _width 属性
+            if tag.has_attr("_width"):
+                del tag["_width"]
+
             stats["rewritten"] += 1
             action_label = "裁剪" if action == "cropped" else "保留"
             print(f"  ✓ 重写图片 {img_name} -> {local_path} ({action_label})")

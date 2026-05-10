@@ -835,7 +835,7 @@ article.md                # Markdown 版本
 
 **原因**: 飞书 Base 中【文章ID】字段对应原始微信文章的 URL hash，多条记录（不同岗位）可能共享同一个 `article_id`。
 
-**解决**: 改用 `--record-id` 精确指定单条记录：
+**快速解决**: 改用 `--record-id` 精确指定单条记录：
 ```bash
 # 先查询对应的 record_id
 lark-cli api GET /open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/records --page-size 500 --as bot | jq '.data.items[] | select(.fields."文章ID"=="aeb220f3") | {record_id, title}'
@@ -844,9 +844,38 @@ lark-cli api GET /open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/recor
 python upload_from_feishu.py --record-id recvifXrBg7PEA
 ```
 
+**彻底清理（推荐）**: 使用自动化脚本删除重复记录，仅保留最新一条：
+```bash
+# 仅清理（保留最新，重置状态）
+python3 ~/.hermes/skills/web/wechat-mp-draft-uploader/scripts/cleanup_duplicate_records.py --article-id 7c3989b2
+
+# 清理 + 自动重新上传
+python3 ~/.hermes/skills/web/wechat-mp-draft-uploader/scripts/cleanup_duplicate_records.py --article-id 7c3989b2 --upload
+```
+
+**手动清理**:
+```bash
+# 1. 查询该 article_id 对应的所有记录
+lark-cli api GET ... | python3 -c "..."
+
+# 2. 删除历史记录（保留最新一条）
+for rid in recvj5s9sFKbOM recvj6QV23GoKg ...; do
+  lark-cli api DELETE "/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/records/$rid" --as bot
+done
+
+# 3. 重置状态
+lark-cli api PUT ... --data '{"fields":{"文章状态":["已选题"]}}' --as bot
+
+# 4. 重新生成草稿并上传
+rm -rf ~/.hermes/output/{article_id}/draft
+python3 ~/.hermes/skills/web/wechat-mp-draft-processor-pro/scripts/process.py {article_id} --account joblinker
+python3 upload_from_feishu.py --record-id {keep_record_id}
+```
+
 **预防**:
 - 当一篇文章包含多个岗位时，优先使用 `--record-id` 而非 `--article-id`
 - 在飞书 Base 中通过【文章标题】区分不同岗位记录
+- 定期使用 `cleanup_duplicate_records.py` 检查并清理重复记录，保持 Base 数据清洁
 
 ---
 
