@@ -382,9 +382,73 @@ python upload_from_feishu.py --record-id recvj6UdXBFNTH
 ```
 
 ### 预防
-- 一篇文章含多个岗位时，**优先使用 `--record-id`** 而非 `--article-id`
+- 一篇文章含多个岗位时，**优先使用 `--record-id`** 非 `--article-id`
 - 在飞书 Base 中通过【文章标题】区分不同岗位记录
 - 上传脚本可考虑增加 `--target-account` 参数，在重复记录中按适配账号自动选择
+
+---
+
+## 批量清理重复记录（自动化）
+
+### 场景
+同一篇原始微信文章含多个岗位，在 Base 中被拆分为多条记录，导致同一 `article_id` 对应多条记录。
+
+### 自动化解决
+使用附带的清理脚本 `cleanup_duplicate_records.py`：
+
+```bash
+cd ~/.hermes/skills/web/wechat-mp-draft-uploader/scripts
+
+# 仅清理重复记录（保留最新，删除其余，重置状态）
+python3 cleanup_duplicate_records.py --article-id 7c3989b2
+
+# 保留指定 record_id，删除其他
+python3 cleanup_duplicate_records.py --article-id 7c3989b2 --keep recvjbuwMHZUx7
+
+# 清理 + 自动重新生成草稿并上传
+python3 cleanup_duplicate_records.py --article-id 7c3989b2 --upload
+
+# 仅查询（不删除，用于确认哪些记录会被影响）
+python3 cleanup_duplicate_records.py --article-id 7c3989b2 --dry-run
+```
+
+### 脚本功能
+1. 查询指定 `article_id` 的所有记录
+2. 保留最新一条（按创建时间排序），或根据 `--keep` 参数保留指定记录
+3. 删除其余所有历史记录
+4. 将保留记录的【文章状态】重置为"已选题"
+5. 若指定 `--upload`，则自动调用 `process.py` 重新生成草稿，然后调用 `upload_from_feishu.py` 上传
+
+### 手动清理（旧方案，仅备份）
+
+如果脚本无法满足需求，可手动执行：
+
+```bash
+# 1. 查询该 article_id 对应的所有记录
+lark-cli api GET "/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/records" \
+  --params '{"page_size":500}' \
+  --as bot | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for item in data.get('data', {}).get('items', []):
+    if item.get('fields', {}).get('文章ID') == '7c3989b2':
+        print(f\"record_id: {item.get('record_id')}, 适配账号: {item.get('fields', {}).get('适配账号')}, 状态: {item.get('fields', {}).get('文章状态')}\")
+"
+
+# 2. 删除历史记录（保留最新一条）
+for rid in recvj5s9sFKbOM recvj6QV23GoKg recvj7fsxhVZaI recvj8pNekJJz4; do
+  lark-cli api DELETE "/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/records/$rid" --as bot
+done
+
+# 3. 重置状态
+lark-cli api PUT "/open-apis/bitable/v1/apps/{base_token}/tables/{table_id}/records/{keep_record_id}" \
+  --data '{"fields":{"文章状态":["已选题"]}}' --as bot
+
+# 4. 重新生成草稿并上传
+rm -rf ~/.hermes/output/{article_id}/draft
+python3 ~/.hermes/skills/web/wechat-mp-draft-processor-pro/scripts/process.py {article_id} --account joblinker
+python3 ~/.hermes/skills/web/wechat-mp-draft-uploader/scripts/upload_from_feishu.py --record-id {keep_record_id}
+```
 
 ---
 
@@ -754,6 +818,65 @@ curl -s -H "Authorization: Bearer $JIANLIZHIZUO_API_KEY" \
 ### 预防
 - 上传前先用 curl 快速测试平台健康状态，避免在平台故障时浪费处理时间
 - 服务端 500 与 SSL 超时、积分不足有明确区分，按上表对症下药
+
+---
+
+## 封面图片同时出现在正文中导致正文不显示
+
+### 现象
+- 草稿上传成功，所有图片均替换为微信永久URL
+- **封面图片能正常设置**（thumbMediaId 正确）
+- 但**正文中的同一张图片不显示**（如 `img_001.png` 既是封面又在正文第一行）
+- 其他正文图片（`img_002.png`、`img_003.png` 等）正常显示
+- 草稿预览时正文出现空白/缺失区域
+
+### 根因
+**微信后台编辑器的行为限制**：当一张图片同时被用作封面（`thumb_media_id`）并出现在正文内容中时，微信编辑器可能会**抑制正文中的重复渲染**，只保留封面位置的显示。
+
+这不是上传脚本的 bug，而是微信平台的渲染策略。
+
+### 诊断
+```bash
+# 1. 确认 draft.html 中确实包含该图片
+python3 -c "
+import re
+content = open('draft/draft.html').read()
+imgs = re.findall(r'<img[^>]*src=\"([^\"]+)\"[^>]*>', content)
+for i, src in enumerate(imgs):
+    print(f'[{i+1}] {src}')
+"
+
+# 2. 确认上传日志中该图片已成功替换为微信URL
+# 应看到：✓ 上传本地图片: images/img_001.png -> http://mmecoa.qpic.cn/...
+# 应看到：✓ 已替换 7 个图片 URL（无报错）
+
+# 3. 确认替换后无残留本地路径
+python3 -c "
+import re
+content = open('draft/draft.html').read()
+remaining = re.findall(r'src=[\"\'](?!http)(?!data:)(?!//)([^\"\']+)[\"\']', content)
+print(f'未替换的本地 src: {remaining}')
+"
+```
+
+### 验证
+若同时满足以下条件，即可判定为微信平台行为而非脚本问题：
+1. 上传日志显示该图片**已成功上传**到微信素材库
+2. `draft.html` 中该图片的 `src` 和 `data-src` **已替换为微信永久URL**
+3. **无残留本地路径**（`images/img_001.png` 已全部替换）
+4. **其他正文图片正常显示**
+5. 该图片**同时也是封面**
+
+### 解决
+| 方案 | 操作 | 适用场景 |
+|------|------|----------|
+| **换封面** | 上传时手动指定另一张图片作为封面：`--cover img_002.png` | 正文有多张图片可选时 |
+| **移除正文重复** | 在 `draft.html` 中删除正文中的 `img_001.png` 标签，仅保留封面 | 封面图不需要在正文中展示时 |
+| **接受现状** | 不处理，封面已展示，正文中的该图可视为冗余 | 封面图即正文首图，功能重复时 |
+
+### 预防
+- 使用 `--cover` 参数显式指定封面，避免智能选择选中正文第一张图
+- 上传后在微信后台预览确认，若发现正文首图缺失且该图同时为封面，即为此问题
 
 ---
 
