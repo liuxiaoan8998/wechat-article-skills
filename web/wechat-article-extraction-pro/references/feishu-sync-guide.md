@@ -60,10 +60,11 @@ def sync_to_feishu(record_data: dict) -> dict:
     base_token = "E9y1bxjHGa9LeGs9q3Tc3J41nmf"
     table_id = "tblYIqHtHrWUlVnP"
     
-    # 计算字段填充率
-    total_fields = 23  # 基础10个 + AI分析13个
+    # 计算字段填充率（仅统计实际同步的21个字段）
+    # 注：飞书Base共23个字段，其中ID和最后更新时间由系统自动生成，不参与同步
+    total_sync_fields = 21  # 基础8个 + AI分析13个
     filled_fields = sum(1 for v in record_data.values() if v and v != "/" and v != ["/"])
-    fill_rate = int(filled_fields / total_fields * 100)
+    fill_rate = int(filled_fields / total_sync_fields * 100)
     
     # 写入临时文件（必须使用相对路径）
     with open('sync_data.json', 'w', encoding='utf-8') as f:
@@ -82,7 +83,8 @@ def sync_to_feishu(record_data: dict) -> dict:
                 return {
                     'success': True, 
                     'record_id': record_id,
-                    'fill_rate': f"{filled_fields}/{total_fields} ({fill_rate}%)"
+                    'fill_rate': f"{filled_fields}/{total_sync_fields} ({fill_rate}%)",
+                    'base_total': 23  # 含2个系统自动生成字段
                 }
             else:
                 return {'success': False, 'error': response.get('error')}
@@ -97,7 +99,7 @@ result = sync_to_feishu(record_data)
 if result['success']:
     print(f"✅ 同步成功！")
     print(f"   记录ID: {result['record_id']}")
-    print(f"   字段填充: {result['fill_rate']}")  # 例如: 23/23 (100%)
+    print(f"   字段填充: {result['fill_rate']}")  # 例如: 21/21 (100%)
 ```
 
 ## 标准反馈格式

@@ -469,6 +469,7 @@ NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' 
 2. **关键词不匹配**：自定义关键词未覆盖。可扩展 `--keywords` 列表，如添加 `"申请"`、`"报名"`、`"投递"` 等同义词。
 3. **只有二维码没有文字**：若环境安装了 `pyzbar` 或 `opencv-python`，脚本会直接按二维码框辅助切分；否则会更依赖 OCR 文本提示。
 4. **rapidocr 置信度过滤**：当前实现未按置信度过滤。若遇到漏检，可检查 rapidocr 原始输出确认是否识别到了文字但置信度过低。
+5. **设计图/图文混排图片**：rapidocr 对图形+文字混排的平面设计图识别效果差（如招聘海报中的橙色投递说明块）。此时脚本会**自动回退到 `article-ocr.md` 的 OCR 结果**作为辅助信号。若 `article-ocr.md` 确认含投递关键词但整图 OCR 未检出，脚本将自动移除底部 25% 区域；若已检出但移除范围仍较小，则扩大裁剪至底部 60%。
 
 ### crop-ocr 与 process-article-images 的 OCR 引擎差异
 
@@ -487,3 +488,4 @@ NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' 
 | v1.1 | 2026-04-29 | 添加快速交互模式指南，支持"用户发图→返回处理图"场景 |
 | v1.2 | 2026-04-29 | process-article-images 支持双引擎 OCR（优先 rapidocr，回退 pytesseract），无需外部 tesseract 二进制 |
 | v1.3 | 2026-05-09 | process-article-images 重构为“投递块分段”模型：支持二维码框辅助识别、纯投递图整图移除、混合图切成可堆叠显示的多个正文片段，并新增 `display_manifest.json` |
+| v1.4 | 2026-05-10 | `process-article-images` 新增 `article-ocr.md` 辅助投递方式识别：整图 OCR 漏检设计图/图文混排时，自动利用 article-ocr.md 的已有 OCR 结果补充信号；若 article-ocr.md 确认含投递关键词但整图 OCR 未检出，自动移除底部 25%；若已检出但移除范围仍 <30%，扩大裁剪至底部 60% |

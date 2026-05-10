@@ -483,27 +483,14 @@ grep -o 'style="[^"]*1px[^"]*"' article_original.html | head -5
 **预防**:
 - 不要直接使用原始 HTML 中的 `style` 属性，必须经过惯性加载样式修复步骤
 - 处理图片时总是检查 `data-original-style` 是否存在
-**问题**: `step2_5_process_images.py` 在将 HTML 中的 `<img>` 标签映射到 `images/img_*.png` 时，优先使用了 `data-index` 属性计算图片名（`img_{data_index + 1}.png`）。但微信 HTML 中 `data-index` 不一定从 0 或 1 开始（例如路易威登文章从 `3` 开始），导致映射错位：
 
-| 实际图片 | data-index | 错误映射为 | 结果 |
-|---------|-----------|-----------|------|
-| img_001 | 3 | img_004 | ❌ 被替换成 img_004 的分段，完全丢失 |
-| img_002 | 4 | img_005（不存在）| 碰巧 fallback 到 img_002 |
-
+### 10. 分段图片的 HTML 替换
+**问题**: `image-processor` 将某些图片切分为多个正文片段后，`step2_5_process_images.py` 需要将原始的单个 `<img>` 标签替换为多个堆叠显示的 `<img>` 标签。
 **解决**:
-- **优先使用 fallback_idx（按 HTML 中 `<img>` 标签的先后顺序）进行映射**，这是唯一可靠的对应方式
-- `data-index` / `data-report-img-idx` 降级为最后候补，且仅在值 ≤10 时才尝试
-- 已在 `_info_for_img()` 中调整候选优先级顺序
-
-**诊断**: 若发现 draft.html 中图片顺序错乱或某张图片消失，检查原始 HTML 的 `data-index` 起始值：
-```bash
-grep -o 'data-index="[0-9]*"' article_original.html | head -5
-```
-若起始值不为 0 或 1，即存在此问题。
-
-**预防**:
-- 不要假设微信 HTML 的 `data-index` 是连续从 0/1 开始的
-- 图片与 img_*.png 的映射应以 DOM 顺序（fallback_idx）为准
+- `image_map.json` 中 `action="segmented"` 的记录包含 `display_parts` 列表
+- `重写逻辑`: 用 `BeautifulSoup` 构造多个 `<img src="..." style="width:100%;max-width:100%;display:block;margin:0;"/>` 标签
+- `插入方式`: 将新标签插入到原 `<img>` 之后，然后删除原 `<img>` 标签
+- `统计`: 替换后的图片计数 = display_parts 数量
 
 ## 后续步骤
 

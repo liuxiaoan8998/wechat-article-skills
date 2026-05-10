@@ -187,6 +187,159 @@ OCR内容: 3,752 bytes
 模式: 混合模式（图文结合）
 ```
 
+## 图片上传缺失诊断流程（重要！）
+
+当用户反馈"上传后图片少了"时，按以下流程系统排查，避免盲目认为是 bug。
+
+### 诊断核心原则
+
+**长图模式文章天然只有 1 张正文图片**。用户看到 OCR 切片有 4 段，不等于上传应该有 4 张图。切片仅用于 OCR 文字识别，**不会被作为独立图片上传**。
+
+### 逐步排查清单
+
+#### Step 1: 检查 article_original.html 中的图片分布
+
+```python
+import re
+from pathlib import Path
+
+html = Path(f"~/.hermes/output/{article_id}/article_original.html").expanduser()
+text = html.read_text(encoding='utf-8')
+
+# 定位 js_content 区域
+jc_start = text.find('id="js_content"')
+jc_end = text.find('</div>\n</div>\n<script', jc_start)
+if jc_end == -1:
+    jc_end = text.find('</div></div><script', jc_start)
+
+js_content = text[jc_start:jc_end]
+all_imgs = re.findall(r'<img[^>]*>', text)
+js_imgs = re.findall(r'<img[^>]*>', js_content)
+
+print(f"全文 img 总数: {len(all_imgs)}")
+print(f"js_content 内 img 数: {len(js_imgs)}")
+```
+
+**解读**：
+- `全文 img > js_content img` → 多余图片是微信 UI 噪声（头像、赞赏码、小程序码、空白占位符），**不应上传**
+- `js_content img = 1` 且尺寸超大（高度>5000px）→ **长图模式，正常**
+
+#### Step 2: 区分内容图 vs UI 噪声图
+
+在 js_content 内逐张检查图片上下文：
+
+```python
+for img in js_imgs:
+    # 获取 src/data-src
+    src = re.search(r'data-src="([^"]*)"', img) or re.search(r'src="([^"]*)"', img)
+    url = src.group(1) if src else "NO_SRC"
+    # 尺寸
+    w = re.search(r'data-w="(\d+)"', img)
+    ratio = re.search(r'data-ratio="([\d.]+)"', img)
+    # 上下文关键词
+    is_ui_noise = any(k in img for k in [
+        'wx_follow_avatar', 'qr_code', 'reward', 'weapp',
+        'js_pc_qr_code', 'jump_wx_qrcode', 'author_avatar',
+        'pic_blank.gif'
+    ])
+```
+
+| 特征 | 内容图 | UI 噪声图 |
+|------|--------|----------|
+| class 含 | `rich_pages`, `wxw-img`, `js_insertlocalimg` | `wx_follow_avatar`, `qr_code`, `reward_pop`, `jump_author_avatar` |
+| alt | `Image` 或空 | `赞赏二维码`, `作者头像`, `跳转二维码` |
+| 尺寸 | 通常 1080×N，比例正常 | 很小（64×64 头像） |
+| data-src 域名 | `mmbiz.qpic.cn` / `mmecoa.qpic.cn` | 同上，但上下文在弹窗/关注框内 |
+
+#### Step 3: 检查 draft.html 输出
+
+```bash
+grep -o '<img[^>]*>' ~/.hermes/output/{article_id}/draft/draft.html | wc -l
+```
+
+- 数量 < js_content 内容图数 → 可能 image-processor 误删了，检查 `image_map.json`
+- 数量 = js_content 内容图数 + 推广模板图数 → **正常**
+- 没有 `image_map.json` → image-processor 未执行，可能跳过图片处理步骤
+
+#### Step 4: 确认长图模式预期
+
+```bash
+ls -la ~/.hermes/output/{article_id}/slices/
+```
+
+如果存在 `slices/img_001_slice_*.jpg`，说明原始图被 OCR 工具切了片。**这是正常的**，draft.html 仍只引用原始完整图一张。
+
+**如果用户坚持要分段上传**，需要额外处理：将切片替换原图，在 draft.html 中插入多张 `<img>` 分别引用各切片。这不是默认行为。
+
+### 典型误判案例
+
+**案例：奇安信校招（ae4a10e9）**
+
+| 检查项 | 结果 | 结论 |
+|--------|------|------|
+| article_original.html 总 img | 15 张 | 看似很多 |
+| js_content 内 img | 8 张 | 仍需细分 |
+| 其中内容图 | **1 张**（1080×6808 长图） | ✅ 正常 |
+| 其中 UI 噪声 | 7 张（赞赏码、关注码、头像、小程序码等） | 已过滤 |
+| draft.html img | 3 张（1 长图 + 2 推广模板图） | ✅ 正常 |
+| 上传成功 | 3 张全部成功 | ✅ 无遗漏 |
+| 用户感知 | "少了 3 张图" | ❌ 误将切片数当图片数 |
+
+**根本原因**：用户看到 `slices/` 目录有 4 段切片，误以为上传应该也有 4 张独立图片。
+
+### 快速诊断脚本
+
+```python
+#!/usr/bin/env python3
+"""微信公众号文章图片上传缺失快速诊断"""
+import re
+from pathlib import Path
+
+def diagnose_images(article_id: str):
+    base = Path.home() / f".hermes/output/{article_id}"
+    html = base / "article_original.html"
+    draft = base / "draft/draft.html"
+    
+    if not html.exists():
+        return {"error": "article_original.html not found"}
+    
+    text = html.read_text(encoding='utf-8')
+    
+    # Find js_content
+    jc_s = text.find('id="js_content"')
+    jc_e = text.find('</div>\n</div>\n<script', jc_s)
+    if jc_e == -1:
+        jc_e = text.find('</div></div><script', jc_s)
+    js = text[jc_s:jc_e] if jc_s != -1 else ""
+    
+    # Categorize images
+    content_imgs = []
+    noise_imgs = []
+    for img in re.findall(r'<img[^>]*>', js):
+        noise_markers = ['wx_follow_avatar', 'qr_code', 'reward', 'weapp',
+                         'js_pc_qr_code', 'jump_wx_qrcode', 'author_avatar',
+                         'pic_blank.gif', '赞赏二维码']
+        if any(m in img for m in noise_markers):
+            noise_imgs.append(img[:60])
+        else:
+            content_imgs.append(img[:60])
+    
+    draft_imgs = len(re.findall(r'<img[^>]*>', draft.read_text())) if draft.exists() else 0
+    slices = list((base / "slices").glob("*.jpg")) if (base / "slices").exists() else []
+    
+    return {
+        "article_id": article_id,
+        "total_img_in_html": len(re.findall(r'<img[^>]*>', text)),
+        "js_content_img_count": len(re.findall(r'<img[^>]*>', js)),
+        "content_images": len(content_imgs),
+        "ui_noise_images": len(noise_imgs),
+        "draft_html_images": draft_imgs,
+        "ocr_slices": len(slices),
+        "mode": "long_image" if len(content_imgs) == 1 and len(slices) > 1 else "normal",
+        "verdict": "NORMAL" if draft_imgs >= len(content_imgs) else "MAYBE_MISSING",
+    }
+```
+
 ## 提取质量评估
 
 ### 健康指标

@@ -249,7 +249,7 @@ if result.returncode == 0:
     if response.get('ok'):
         record_id = response['data']['record']['record_id_list'][0]
         print(f"✅ 同步成功！记录ID: {record_id}")
-        print(f"📊 字段填充: {22-len(missing)}/22")
+        print(f"📊 字段填充: {21-len(missing)}/21")
     else:
         print(f"❌ 同步失败: {response.get('error')}")
 ```

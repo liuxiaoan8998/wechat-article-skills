@@ -719,6 +719,110 @@ def _write_removed_segment(
     return removed_path
 
 
+
+# ============ 切片辅助处理 ============
+
+def find_image_slices(article_dir: Path, img_name: str) -> List[Path]:
+    """
+    查找某张图片在 slices/ 目录下的切片文件。
+    
+    切片命名格式: {img_stem}_slice_{NN}.jpg
+    例如 img_001.jpg 的切片: slices/img_001_slice_01.jpg
+    
+    Returns:
+        按文件名排序的切片路径列表
+    """
+    slices_dir = article_dir / "slices"
+    if not slices_dir.exists():
+        return []
+    
+    stem = Path(img_name).stem
+    pattern = re.compile(re.escape(stem) + r"_slice_\d+\.jpg", re.IGNORECASE)
+    slice_files = sorted([
+        f for f in slices_dir.iterdir()
+        if f.is_file() and pattern.match(f.name)
+    ])
+    return slice_files
+
+
+def extract_slice_ocr_text_from_md(article_dir: Path, img_name: str) -> str:
+    """
+    从 article-ocr.md 中提取某张图片的切片 OCR 文本。
+    
+    article-ocr.md 格式:
+        #### 图片: img_001.jpg
+        
+        [段1]
+        ...文本...
+        
+        [段2]
+        ...文本...
+    
+    Returns:
+        所有段落的合并文本
+    """
+    ocr_md_path = article_dir / "article-ocr.md"
+    if not ocr_md_path.exists():
+        return ""
+    
+    try:
+        text = ocr_md_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    
+    # 找到该图片对应的区块
+    # 匹配 #### 图片: img_name 到下一个 #### 图片: 或 ## 之间
+    pattern = re.compile(
+        r"####\s+图片:\s*" + re.escape(img_name) + r"\b(.*?)"
+        r"(?=\n####\s+图片:|\n##\s|\n---\s*\n\s*##\s|$)",
+        re.DOTALL | re.IGNORECASE,
+    )
+    match = pattern.search(text)
+    if not match:
+        return ""
+    
+    block = match.group(1)
+    # 提取 [段N] 之间的文本
+    segments = re.findall(r"\[段\d+\]\n(.*?)(?=\n\[段\d+\]|\n\*\*切片数量|\n---|$)", block, re.DOTALL)
+    if not segments:
+        # 尝试匹配旧格式或不带 [段N] 标记的内容
+        # 直接取整个 block 的文本（去掉 markdown 标记）
+        clean = re.sub(r"\*\*[^*]+\*\*:\s*", "", block)
+        clean = re.sub(r"`[^`]+`", "", clean)
+        clean = re.sub(r"!\[.*?\]\(.*?\)", "", clean)
+        clean = re.sub(r"\[.*?\]\(.*?\)", "", clean)
+        clean = re.sub(r"[-*]\s+", "", clean)
+        return clean.strip()
+    
+    return "\n".join(s.strip() for s in segments if s.strip())
+
+
+def copy_slices_to_draft(article_dir: Path, slice_files: List[Path]) -> List[str]:
+    """
+    将切片文件复制到 draft/images/ 目录，并返回相对于 article_dir 的路径列表。
+    
+    Args:
+        article_dir: 文章目录
+        slice_files: 切片文件路径列表
+    
+    Returns:
+        相对于 article_dir 的路径列表，例如 ["draft/images/img_001_slice_01.jpg", ...]
+    """
+    draft_images_dir = article_dir / "draft" / "images"
+    draft_images_dir.mkdir(parents=True, exist_ok=True)
+    
+    display_parts = []
+    for slice_path in slice_files:
+        dest = draft_images_dir / slice_path.name
+        if not dest.exists() or dest.stat().st_size != slice_path.stat().st_size:
+            import shutil
+            shutil.copy2(slice_path, dest)
+        rel_path = f"draft/images/{slice_path.name}"
+        display_parts.append(rel_path)
+    
+    return display_parts
+
+
 # ============ 文章图片批量处理 ============
 
 def process_article_images(
@@ -833,6 +937,36 @@ def process_article_images(
 
             base_name = img_path.stem
             ext = img_path.suffix or ".jpg"
+
+            # ========== 长图模式：自动用切片替换原图上传 ==========
+            slice_files = find_image_slices(article_dir, img_name)
+            has_slices = bool(slice_files)
+
+            if has_slices and (h > 3000 or h / w > 3):
+                # 长图模式：直接用切片替换原图上传
+                display_parts = copy_slices_to_draft(article_dir, slice_files)
+                result["image_map"][img_name] = {
+                    "action": "segmented",
+                    "reason": "long_image_with_slices",
+                    "original_path": str(img_path.relative_to(article_dir)),
+                    "display_parts": display_parts,
+                    "slice_count": len(slice_files),
+                }
+                result["class_b_segmented"].append(img_name)
+                result["display_manifest"][img_name] = {
+                    "mode": "stacked_segments",
+                    "gap": display_gap,
+                    "parts": display_parts,
+                }
+                print(f"   → 长图模式：使用 {len(slice_files)} 个切片替换原图 (高度 {h}px)")
+                continue
+
+            # ========== article-ocr.md 辅助投递方式识别 ==========
+            # 总是读取 article-ocr.md 中已有的 OCR 结果（不限于切片模式）
+            md_ocr_text = extract_slice_ocr_text_from_md(article_dir, img_name)
+            if md_ocr_text:
+                print(f"   从 article-ocr.md 读取 OCR 文本: {len(md_ocr_text)} 字符")
+
             qr_boxes = _detect_qr_boxes(img)
             if qr_boxes:
                 result["qr_available"] = True
@@ -888,6 +1022,16 @@ def process_article_images(
                 )
                 removal_ranges.append((footer_cut_top, h))
 
+            # article-ocr.md 辅助：如果整图 OCR 未检出但 article-ocr.md 检出投递关键词，补充移除范围
+            md_has_delivery = False
+            if md_ocr_text:
+                md_has_delivery = any(kw in md_ocr_text for kw in keywords)
+                if md_has_delivery and not matched_blocks:
+                    print(f"   ⚠️ article-ocr.md 检测到投递关键词（整图OCR未检出）")
+                    # 保守策略：移除底部25%区域（投递信息通常在底部）
+                    removal_ranges.append((int(h * 0.75), h))
+                    keywords_found = keywords_found or ["article-ocr.md 检测"]
+
             if matched_blocks:
                 for block in matched_blocks:
                     if footer_cut_top is not None and block["bottom"] >= footer_cut_top:
@@ -930,6 +1074,19 @@ def process_article_images(
             print(f"   命中文本块: {len(matched_blocks)}")
             print(f"   二维码块: {len(qr_boxes)}")
             print(f"   移除高度占比: {removal_ratio*100:.1f}%")
+
+            # article-ocr.md 二次辅助：当已有 OCR 确认投递信息但移除范围仍较小时，扩大裁剪
+            if md_has_delivery and removal_ratio < 0.30:
+                print(f"   ⚠️ article-ocr.md 确认投递信息，扩大底部裁剪")
+                # 将移除范围扩展为从图片 60% 高度处开始（保留上半部分正文）
+                removal_ranges.append((int(h * 0.60), h))
+                # 重新计算
+                merged_ranges = _merge_ranges(removal_ranges, h)
+                removed_height = sum(bottom - top for top, bottom in merged_ranges)
+                removal_ratio = removed_height / h if h else 0
+                if not keywords_found:
+                    keywords_found = ["article-ocr.md 检测"]
+                print(f"   扩大后移除高度占比: {removal_ratio*100:.1f}%")
 
             strong_qr_boxes = [
                 box for box in qr_boxes
