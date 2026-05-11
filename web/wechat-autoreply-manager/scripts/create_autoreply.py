@@ -26,18 +26,9 @@ import sys
 import json
 import subprocess
 import requests
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
-
-# 自动加载 .env 文件（如果存在）
-_env_path = Path(__file__).resolve().parents[3] / ".env"
-if _env_path.exists():
-    with open(_env_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, value = line.split('=', 1)
-                os.environ.setdefault(key, value.strip())
 
 # 自动加载 .env 文件（如果存在）
 _env_path = Path(__file__).resolve().parents[3] / ".env"
@@ -57,9 +48,9 @@ TABLE_ID = os.getenv("FEISHU_ARTICLE_TABLE_ID")
 
 # 账号映射
 ACCOUNT_MAP = {
-    "Joblinker": "wxYOUR_APPID_HERE",
+    "Joblinker": "wx6446cfa75b1756ee",
     "研究生求职圈": "wxYOUR_APPID_HERE",
-    "行研实习": "wxYOUR_APPID_HERE"
+    "行研实习": "wx870f4a03046d6e70"
 }
 
 # 企业简称自检：这些词不应出现在简称中
