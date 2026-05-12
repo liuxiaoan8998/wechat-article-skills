@@ -877,3 +877,61 @@ lark-cli base +record-upsert \
 | **v2.1** | 修复 `delete_rule()` 方法：DELETE 请求移除 `Content-Type` header；新增"从草稿提取图片"备用方案文档；新增"日期关键词规则清理"指南；新增手动更新 Base 状态命令 |
 | **v2.2** | 修复 `create_autoreply.py` 两处 bug：(1) 添加缺失的 `from pathlib import Path` 导入并去除重复的 `.env` 加载代码块；(2) 替换 `ACCOUNT_MAP` 中的占位符 `wxYOUR_APPID_HERE` 为真实 appid，解决"账号不存在"错误 |
 | **v2.3** | 修复 `ACCOUNT_MAP` 中「研究生求职圈」的 appid 仍为占位符 `wxYOUR_APPID_HERE` 的遗留问题，更新为真实 appid `wxb6df231e0a1b6133` |
+| **v2.4** | 新增"批量执行前预检清单"，防止 `preview` 通过但 `execute` 部分失败的静默错误；新增"占位符 appid 排查 SOP" |
+
+---
+
+## 批量执行前预检清单
+
+当批量为多篇文章/多账号创建自动回复规则时，**必须先执行预检**，防止 `preview` 通过但 `execute` 部分失败的静默错误。
+
+### 预检步骤
+
+```bash
+# Step 1: 验证 API 可连通
+python ~/.hermes/skills/web/wechat-autoreply-manager/scripts/create_autoreply.py <article_id> --preview
+
+# Step 2: 检查 ACCOUNT_MAP 中是否存在占位符
+python3 -c "
+import sys, os
+sys.path.insert(0, os.path.expanduser('~/.hermes/skills/web/wechat-autoreply-manager/scripts'))
+from create_autoreply import ACCOUNT_MAP
+placeholders = [k for k, v in ACCOUNT_MAP.items() if 'YOUR' in v or 'PLACEHOLDER' in v or v.startswith('wx') and len(v) <= 15]
+if placeholders:
+    print(f'⚠️ 发现占位符: {placeholders}')
+else:
+    print('✅ 无占位符')
+"
+
+# Step 3: 交叉验证 ACCOUNT_MAP 与 API 实际账号
+python3 -c "
+import requests, os
+API_KEY = os.getenv('JIANLIZHIZUO_API_KEY')
+headers = {'Authorization': f'Bearer {API_KEY}'}
+resp = requests.get('https://mp.jianlizhizuo.cn/v1/accounts?page=1&pageSize=100', headers=headers, timeout=30)
+api_ids = {a['appid'] for a in resp.json().get('data', {}).get('list', [])}
+from create_autoreply import ACCOUNT_MAP
+for name, appid in ACCOUNT_MAP.items():
+    status = '✅' if appid in api_ids else '❌ 账号不存在'
+    print(f'  {status} {name}: {appid}')
+"
+```
+
+### 占位符 appid 排查 SOP
+
+当执行时出现 `账号不存在` 错误，按以下流程排查：
+
+```
+发现 账号不存在
+    ↓
+检查 ACCOUNT_MAP 中该账号的 appid 是否为占位符（如 wxYOUR_APPID_HERE）
+    ↓
+若是占位符 → 查询 API 获取真实 appid
+    python3 -c "import requests...; # 见上文 Step 3"
+    ↓
+更新 create_autoreply.py 中 ACCOUNT_MAP
+    ↓
+重新执行 --execute
+```
+
+**关键教训**：`preview` 模式**不验证** appid 的有效性（仅读取本地配置），只有 `execute` 模式会调用 API 暴露问题。因此批量执行前必须用 Step 3 交叉验证。
