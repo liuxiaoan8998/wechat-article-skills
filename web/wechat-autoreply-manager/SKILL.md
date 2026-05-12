@@ -574,8 +574,39 @@ if '|' in clean_title:
 
 ```bash
 # 添加到 ~/.hermes/.env
-export JIANLIZHIZUO_API_KEY=sk-xxxxxxxxxxxxxxxx
+export JIANLIZHIZUO_API_KEY=***
 ```
+
+### 8. `create_autoreply.py` 运行报错 `NameError: name 'Path' is not defined`
+
+**现象**：运行 `create_autoreply.py` 时抛出异常：`NameError: name 'Path' is not defined`
+
+**原因**：脚本使用了 `Path(__file__)` 但未导入 `pathlib.Path`，且存在重复的 `.env` 加载代码块。
+
+**解决**：
+```python
+# 在导入区添加
+from pathlib import Path
+
+# 移除重复的 .env 加载代码块（原脚本有两份完全一样的加载逻辑）
+```
+
+### 9. `create_autoreply.py` 运行报错 `账号不存在`
+
+**现象**：预览正常，但执行创建时返回 `40400 账号不存在`。
+
+**原因**：`ACCOUNT_MAP` 中的 appid 是占位符 `wxYOUR_APPID_HERE`，未替换为真实的微信公众号 appid。
+
+**解决**：修正 `ACCOUNT_MAP`：
+```python
+ACCOUNT_MAP = {
+    "Joblinker": "wx6446cfa75b1756ee",
+    "行研实习": "wx870f4a03046d6e70",
+    # ... 其他账号
+}
+```
+
+**注意**：若添加新账号，必须在 `ACCOUNT_MAP` 中配置正确的 appid，否则会出现同样的"账号不存在"错误。
 
 ## 手动创建规则模板
 
@@ -844,3 +875,5 @@ lark-cli base +record-upsert \
 | v1.8 | 记录AI企业简称提取准确率问题及手动修正工流；文档化PUT API直接替换内容的方法 |
 | **v2.0** | **预览确认模式**：上传前先展示计划内容，用户确认后才执行；**企业简称自检**：自动检测无效词并修正，修正后再展示给用户 |
 | **v2.1** | 修复 `delete_rule()` 方法：DELETE 请求移除 `Content-Type` header；新增"从草稿提取图片"备用方案文档；新增"日期关键词规则清理"指南；新增手动更新 Base 状态命令 |
+| **v2.2** | 修复 `create_autoreply.py` 两处 bug：(1) 添加缺失的 `from pathlib import Path` 导入并去除重复的 `.env` 加载代码块；(2) 替换 `ACCOUNT_MAP` 中的占位符 `wxYOUR_APPID_HERE` 为真实 appid，解决"账号不存在"错误 |
+| **v2.3** | 修复 `ACCOUNT_MAP` 中「研究生求职圈」的 appid 仍为占位符 `wxYOUR_APPID_HERE` 的遗留问题，更新为真实 appid `wxb6df231e0a1b6133` |

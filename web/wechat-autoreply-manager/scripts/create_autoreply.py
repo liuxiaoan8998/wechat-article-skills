@@ -49,7 +49,7 @@ TABLE_ID = os.getenv("FEISHU_ARTICLE_TABLE_ID")
 # 账号映射
 ACCOUNT_MAP = {
     "Joblinker": "wx6446cfa75b1756ee",
-    "研究生求职圈": "wxYOUR_APPID_HERE",
+    "研究生求职圈": "wxb6df231e0a1b6133",
     "行研实习": "wx870f4a03046d6e70"
 }
 
